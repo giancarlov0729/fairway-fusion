@@ -71,9 +71,28 @@ Install dependencies:
 
 ## Development Status
 
-Current phase: Project initialization.
+Implemented: dual-camera multi-flash replay, calibrated sphere/dot reconstruction,
+asymmetric dot correspondence, 3D spin rate/axis, launch measurements, quality rejection,
+Pi capture utilities and provisional Pico PIO timing firmware. Hardware qualification
+and validation against real shots remain outstanding.
 
-The computer vision algorithms are under development.
+## Run the spin demo
+
+From the repository root after installation:
+
+```sh
+python -m fairway_fusion.synthetic data/recordings/demo
+fairway-analyze data/recordings/demo/shot.json
+python -m pytest -q
+```
+
+The demo renders two camera exposures containing three flash-separated ball images
+at a known 3,000 RPM. The 60 FPS cameras use Pico-timed IR flashes as the sampling
+clock; ordinary 60 FPS video cannot resolve the full intended golf spin range.
+
+See [spin tracking and replay](docs/spin_tracking.md) for ball markings, calibration,
+configuration, JSON outputs and limitations. See [camera/Pico setup](docs/camera_setup.md)
+for IMX296 capture, provisional pin assignments, firmware and bench checks.
 
 ## Team
 

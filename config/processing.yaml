@@ -1,0 +1,18 @@
+ball_radius_m: 0.021335
+max_rpm: 10000
+# Image-space direction of travel, separately measured for each camera.
+flight_directions: [[1, 0], [1, 0]]
+max_center_disagreement_m: 0.005
+max_rotation_disagreement_rad: 0.08
+ball_detection:
+  threshold: 100
+  min_radius: 12
+  max_radius: 250
+marker_detection:
+  contrast: 35
+  min_area: 3
+  max_area_fraction: 0.025
+matching:
+  tolerance_rad: 0.055
+  min_inliers: 4
+  max_markers: 16

@@ -7,6 +7,14 @@ name = "fairway-fusion"
 version = "0.1.0"
 description = "Dual-camera computer vision golf launch monitor"
 requires-python = ">=3.10"
+dependencies = ["numpy>=1.26,<3", "scipy>=1.11,<2", "opencv-python-headless>=4.8,<5", "PyYAML>=6,<7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+hardware = ["pyserial>=3.5,<4"]
+
+[project.scripts]
+fairway-analyze = "fairway_fusion.pipeline:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
