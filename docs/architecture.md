@@ -81,4 +81,6 @@ Coordinates the processing stages and produces shot results.
 
 ## Current Status
 
-Architecture defined. Implementation pending.
+Architecture defined. The vertical launch-angle analysis module has a basic
+implementation, synthetic demo, and tests. Other pipeline stages remain pending.
+See [launch-angle inputs and limitations](launch_angle.md).

@@ -43,7 +43,7 @@ The system uses two cameras to observe a golf ball immediately after impact. Hig
 
 Clone the repository:
 
-    git clone https://github.com/YOUR_USERNAME/fairway-fusion.git
+    git clone https://github.com/giancarlov0729/fairway-fusion.git
     cd fairway-fusion
 
 Create a virtual environment:
@@ -71,7 +71,17 @@ Install dependencies:
 
 ## Development Status
 
-Current phase: Project initialization.
+Current phase: Pre-alpha architectural skeleton.
+
+A basic vertical launch-angle calculation is implemented using calibrated 3D
+positions and timestamps. A synthetic demo and automated tests run without cameras:
+
+    python scripts/launch_angle_demo.py
+    python -m pytest
+
+See [launch-angle setup, assumptions, and known limitations](docs/launch_angle.md).
+Camera capture, calibration, and ball tracking remain unimplemented; demo output
+is simulated and does not establish measurement accuracy.
 
 The computer vision algorithms are under development.
 
