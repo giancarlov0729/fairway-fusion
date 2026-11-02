@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "shot_id": "sim-high-launch-42",
+  "source": "simulation",
+  "scenario": "high-launch",
+  "seed": 42,
+  "input_stage": "reconstructed_ball_positions",
+  "noise_mm": 0.0,
+  "axes": "X downrange, Y left, Z up",
+  "samples": [
+    {
+      "t_ms": 0,
+      "x_mm": 0.0,
+      "y_mm": 0.0,
+      "z_mm": 21.335
+    },
+    {
+      "t_ms": 1,
+      "x_mm": 28.670321550114714,
+      "y_mm": 0.0,
+      "z_mm": 41.41017527228661
+    },
+    {
+      "t_ms": 2,
+      "x_mm": 57.34064310022943,
+      "y_mm": 0.0,
+      "z_mm": 61.48535054457322
+    },
+    {
+      "t_ms": 3,
+      "x_mm": 86.01096465034414,
+      "y_mm": 0.0,
+      "z_mm": 81.56052581685984
+    },
+    {
+      "t_ms": 4,
+      "x_mm": 114.68128620045886,
+      "y_mm": 0.0,
+      "z_mm": 101.63570108914644
+    },
+    {
+      "t_ms": 5,
+      "x_mm": 143.35160775057358,
+      "y_mm": 0.0,
+      "z_mm": 121.71087636143307
+    }
+  ]
+}
