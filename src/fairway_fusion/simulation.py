@@ -1,6 +1,8 @@
 """Reproducible trajectory input at the camera reconstruction boundary."""
 
 import numpy as np
+from fairway_fusion.analysis.launch_angle import launch_metrics
+from fairway_fusion.analysis.velocity import estimate_velocity
 
 
 SCENARIOS = {
@@ -47,6 +49,38 @@ def generate_shot(scenario="straight", seed=42, noise_mm=0.0):
         "noise_mm": noise_mm,
         "axes": "X downrange, Y left, Z up",
         "samples": samples,
+    }
+
+
+def calculation_input(packet):
+    """Explicit mm/ms -> SI adapter for Person 1; no UI/database dependency."""
+    if (
+        packet.get("schema_version") != 1
+        or packet.get("input_stage") != "reconstructed_ball_positions"
+    ):
+        raise ValueError("Unsupported position sample contract")
+    samples = packet["samples"]
+    if not 2 <= len(samples) <= 1000:
+        raise ValueError("Require 2–1000 samples")
+    try:
+        values = np.array(
+            [[s[k] for k in ("t_ms", "x_mm", "y_mm", "z_mm")] for s in samples], float
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Each sample needs numeric t_ms, x_mm, y_mm, z_mm") from exc
+    if not np.isfinite(values).all() or np.any(np.diff(values[:, 0]) <= 0):
+        raise ValueError("Require finite coordinates and increasing timestamps")
+    return values[:, 1:] * 0.001, (values[:, 0] - values[0, 0]) * 0.001
+
+
+def analyze_samples(packet):
+    positions, times = calculation_input(packet)
+    velocity = estimate_velocity(positions, times)
+    return {
+        "shot_id": packet["shot_id"],
+        "source": packet["source"],
+        "velocity_m_s": velocity.tolist(),
+        **launch_metrics(velocity),
     }
 
 
