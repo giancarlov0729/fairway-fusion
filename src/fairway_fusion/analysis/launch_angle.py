@@ -6,6 +6,7 @@ Coordinates:
     +Z: Up
 
 Velocity components must be measured in meters per second.
+Angles are measured in degrees; +Y corresponds to a leftward launch.
 """
 
 import math
@@ -19,7 +20,10 @@ MPS_TO_MPH = 2.2369362921
 
 
 def calculate_launch_angle(velocity) -> float:
-    """Calculate vertical launch angle in degrees."""
+    """Return elevation relative to the horizontal plane, in degrees.
+
+    Uses atan2(vz, horizontal_speed); zero velocity has no defined angle.
+    """
 
     vector = np.asarray(velocity, dtype=float)
 
@@ -37,7 +41,11 @@ def calculate_launch_angle(velocity) -> float:
 
 
 def estimate_launch_angle(positions, timestamps) -> float:
-    """Estimate vertical launch angle from timestamped 3D positions."""
+    """Fit early-flight velocity and return its vertical angle.
+
+    Positions and timestamps are in meters and seconds respectively.
+    The estimate is an average direction over the fitted observation window.
+    """
 
     velocity = estimate_velocity(positions, timestamps)
 
@@ -45,7 +53,7 @@ def estimate_launch_angle(positions, timestamps) -> float:
 
 
 def calculate_ball_speed(velocity) -> float:
-    """Calculate ball speed in meters per second."""
+    """Return the Euclidean magnitude of a 3D velocity vector in m/s."""
 
     vector = np.asarray(velocity, dtype=float)
 
@@ -60,6 +68,7 @@ def calculate_launch_direction(velocity) -> float:
 
     Positive angles indicate leftward launch.
     Negative angles indicate rightward launch.
+    The angle is undefined if horizontal velocity is zero.
     """
 
     vector = np.asarray(velocity, dtype=float)
@@ -76,7 +85,12 @@ def calculate_launch_direction(velocity) -> float:
 
 
 def launch_metrics(velocity) -> dict:
-    """Return standardized launch metrics for the simulation module."""
+    """Return the metrics expected by the simulator/server handoff.
+
+    The speed is always numeric. Undefined elevation (zero 3D velocity) or
+    direction (zero horizontal velocity) is represented by None, matching
+    the existing simulator contract. No spin or carry is inferred here.
+    """
 
     speed_m_s = calculate_ball_speed(velocity)
 
