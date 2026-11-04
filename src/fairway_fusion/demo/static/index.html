@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Fairway Fusion · Pre-alpha demo</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Fairway Fusion home"
+        ><span class="mark">f<span>f</span></span
+        ><span>fairway<br /><b>fusion.</b></span></a
+      >
+      <div class="edition">THE LAUNCH LAB <span>PRE-ALPHA / 01</span></div>
+      <p class="sidebar-label">CAPTURE LIBRARY</p>
+      <nav id="fixtures" aria-label="Sample captures"></nav>
+      <button class="import-btn" id="import">＋ Import sensor JSON</button
+      ><input type="file" accept=".json,application/json" id="file" hidden />
+      <div class="sidebar-bottom">
+        <span class="live-dot"></span> Local processing · offline ready
+        <p>Two cameras. One clearer picture.</p>
+        <small
+          >University of Florida<br />Computer Engineering Senior Design</small
+        >
+      </div>
+    </aside>
+    <main>
+      <header>
+        <div>
+          <div class="eyebrow">FAIRWAY FUSION / DEMONSTRATION</div>
+          <h1>Every shot tells a story.</h1>
+          <p class="intro">
+            From timed observations to a complete flight projection.
+          </p>
+        </div>
+        <div class="header-actions">
+          <button id="units" class="quiet" aria-label="Change display units">
+            Yards · mph</button
+          ><button id="export" class="quiet" disabled>Export result ↗</button>
+        </div>
+      </header>
+      <section class="notice">
+        <span class="notice-dot"></span><b id="source">SIMULATED SENSOR DATA</b
+        ><span id="provenance"
+          >Reproducible inputs. Calculated launch metrics. Estimated
+          flight.</span
+        >
+      </section>
+      <section class="run-bar">
+        <div>
+          <span class="eyebrow">SELECTED CAPTURE</span>
+          <h2 id="capture-title">Loading capture…</h2>
+          <span id="capture-detail" class="muted"
+            >Four optical timestamps · two calibrated views</span
+          >
+        </div>
+        <button id="run" class="primary" disabled>
+          Run capture <span>↗</span>
+        </button>
+      </section>
+      <div id="message" role="status" aria-live="polite"></div>
+      <section class="metrics" aria-label="Shot measurements">
+        <article>
+          <span class="metric-label">Ball speed <i>CALCULATED</i></span>
+          <div>
+            <strong id="speed">—</strong><span id="speed-unit">mph</span>
+          </div>
+          <small>From displacement / time</small>
+        </article>
+        <article>
+          <span class="metric-label">Launch angle <i>CALCULATED</i></span>
+          <div><strong id="launch">—</strong><span>°</span></div>
+          <small id="direction">Direction —</small>
+        </article>
+        <article>
+          <span class="metric-label">Spin rate <i>CALCULATED</i></span>
+          <div><strong id="spin">—</strong><span>rpm</span></div>
+          <small id="axis">3D orientation / time</small>
+        </article>
+        <article class="estimate">
+          <span class="metric-label">Carry <i>ESTIMATED</i></span>
+          <div>
+            <strong id="carry">—</strong><span class="distance-unit">yd</span>
+          </div>
+          <small id="range">Model sensitivity shown after run</small>
+        </article>
+        <article class="estimate">
+          <span class="metric-label">Total distance <i>ESTIMATED</i></span>
+          <div>
+            <strong id="total">—</strong><span class="distance-unit">yd</span>
+          </div>
+          <small id="roll">Includes assumed rollout</small>
+        </article>
+      </section>
+      <section class="visual-grid">
+        <div class="flight-panel">
+          <div class="flight-header">
+            <div>
+              <span class="eyebrow">PROJECTED BALL FLIGHT</span>
+              <h2 id="flight-title">A view of what comes next.</h2>
+            </div>
+            <div class="segmented">
+              <button id="perspective" class="selected" aria-pressed="true">
+                Flight view</button
+              ><button id="overhead" aria-pressed="false">Overhead</button>
+            </div>
+          </div>
+          <div class="canvas-wrap">
+            <canvas
+              id="flight"
+              aria-label="Projected ball trajectory. Numerical flight results are provided below."
+            ></canvas>
+            <div class="canvas-empty" id="canvas-empty">
+              Ready when you are.<span
+                >Run a capture to project its flight.</span
+              >
+            </div>
+          </div>
+          <div class="flight-summary">
+            <span>APEX <b id="apex">—</b></span
+            ><span>FLIGHT TIME <b id="flight-time">—</b></span
+            ><span>OFFLINE AT LANDING <b id="offline">—</b></span
+            ><button id="animate" disabled>↻ Replay flight</button>
+          </div>
+          <div class="model-note">
+            Flight visualization is a model estimate · flat landing plane ·
+            illustrative aerodynamics
+          </div>
+        </div>
+        <aside class="process-panel">
+          <span class="eyebrow">OBSERVATION → INSIGHT</span>
+          <h2>Inside the capture</h2>
+          <ol id="stages">
+            <li>
+              <span>01</span>
+              <div>
+                <b>Read timed observations</b
+                ><small>Pico pulse centres, camera poses</small>
+              </div>
+            </li>
+            <li>
+              <span>02</span>
+              <div>
+                <b>Validate the capture</b
+                ><small>Stereo agreement, unique dot matches</small>
+              </div>
+            </li>
+            <li>
+              <span>03</span>
+              <div>
+                <b>Calculate launch & spin</b
+                ><small>Position and 3D rotation over time</small>
+              </div>
+            </li>
+            <li>
+              <span>04</span>
+              <div>
+                <b>Project the flight</b
+                ><small>Gravity, drag, spin lift and rollout</small>
+              </div>
+            </li>
+          </ol>
+          <div class="quality-box">
+            <span id="quality-status">AWAITING CAPTURE</span>
+            <p id="quality-detail">
+              Measurements are released only after the input passes the quality
+              checks.
+            </p>
+          </div>
+          <small id="elapsed"
+            >Presentation replay runs at a readable pace.</small
+          >
+        </aside>
+      </section>
+      <section class="bottom-grid">
+        <div class="surface panel">
+          <div class="section-heading">
+            <h2>Flight conditions</h2>
+            <span>MODEL INPUTS</span>
+          </div>
+          <label for="wind"
+            >Wind along target line
+            <output id="wind-value">0 m/s · calm</output></label
+          ><input
+            id="wind"
+            type="range"
+            min="-10"
+            max="10"
+            step="1"
+            value="0"
+          />
+          <div class="slider-labels">
+            <span>Headwind</span><span>Tailwind</span>
+          </div>
+          <label for="ground">Landing surface</label
+          ><select id="ground">
+            <option value="standard">Standard fairway</option>
+            <option value="soft">Soft · less rollout</option>
+            <option value="firm">Firm · more rollout</option>
+          </select>
+          <p>
+            Changes apply on the next run. Carry is launch-to-first-impact
+            horizontal distance; total is launch-to-rest horizontal distance.
+          </p>
+        </div>
+        <div class="panel">
+          <div class="section-heading">
+            <h2>Proof behind the numbers</h2>
+            <span>TRACEABLE OUTPUT</span>
+          </div>
+          <dl class="proof">
+            <div>
+              <dt>Stereo centre difference</dt>
+              <dd id="stereo">—</dd>
+            </div>
+            <div>
+              <dt>Position fit residual</dt>
+              <dd id="residual">—</dd>
+            </div>
+            <div>
+              <dt>Minimum matched dots / view</dt>
+              <dd id="dots">—</dd>
+            </div>
+            <div>
+              <dt>Pulse interval / timing uncertainty</dt>
+              <dd id="timing">—</dd>
+            </div>
+          </dl>
+          <p class="qualification">
+            Synthetic replay demonstrates the calculation path. Physical
+            measurement accuracy and the distance model still require reference
+            testing.
+          </p>
+        </div>
+      </section>
+      <details class="panel inspect">
+        <summary>
+          Inspect the sensor observations <span>JSON + observation table</span>
+        </summary>
+        <p>
+          These inputs are calibrated ball centres and dot-derived orientations,
+          after computer vision. Built-in examples simulate this boundary; they
+          do not run raw-image detection.
+        </p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Pulse</th>
+                <th>Time (µs)</th>
+                <th>Camera 1 centre (m)</th>
+                <th>Camera 2 centre (m)</th>
+                <th>Matched dots</th>
+              </tr>
+            </thead>
+            <tbody id="observations"></tbody>
+          </table>
+        </div>
+        <button id="download-input" class="quiet">Download input JSON ↓</button>
+        <pre id="raw"></pre>
+      </details>
+      <details class="panel inspect">
+        <summary>Model assumptions & reference comparison</summary>
+        <p>
+          The flight model integrates gravity, quadratic drag and spin-induced
+          lift. Coefficients are illustrative, not calibrated to a specific
+          ball. Rollout is a surface-dependent approximation; no individual
+          bounces are simulated. The carry range varies drag and lift slope by
+          ±20%; it is not a statistical confidence interval.
+        </p>
+        <pre id="assumptions">
+Run a capture to inspect the exact model inputs.</pre>
+        <div id="reference"></div>
+      </details>
+      <section class="panel history">
+        <div class="section-heading">
+          <h2>This demo session</h2>
+          <button id="clear" class="text-btn">Clear history</button>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Capture</th>
+                <th>Status</th>
+                <th>Ball speed</th>
+                <th>Spin</th>
+                <th>Carry estimate</th>
+                <th>Total estimate</th>
+              </tr>
+            </thead>
+            <tbody id="history">
+              <tr>
+                <td colspan="6" class="empty">
+                  Your runs will appear here. Session history stays in this tab.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <footer>
+        <b>fairway fusion.</b
+        ><span>PRE-ALPHA DEMO / CALCULATIONS, NOT CLAIMS.</span>
+      </footer>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

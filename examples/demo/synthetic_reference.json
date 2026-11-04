@@ -1,0 +1,18 @@
+{
+  "driver": {
+    "speed_m_s": 68,
+    "launch_angle_deg": 13,
+    "spin_rpm": 2600
+  },
+  "iron": {
+    "speed_m_s": 49,
+    "launch_angle_deg": 20,
+    "spin_rpm": 6100
+  },
+  "wedge": {
+    "speed_m_s": 34,
+    "launch_angle_deg": 33,
+    "spin_rpm": 8800
+  },
+  "rejected": null
+}

@@ -15,6 +15,10 @@ hardware = ["pyserial>=3.5,<4"]
 
 [project.scripts]
 fairway-analyze = "fairway_fusion.pipeline:main"
+fairway-demo = "fairway_fusion.demo.server:main"
+
+[tool.setuptools.package-data]
+"fairway_fusion.demo" = ["static/*.html", "static/*.css", "static/*.js"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

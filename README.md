@@ -78,6 +78,19 @@ and validation against real shots remain outstanding.
 
 ## Run the spin demo
 
+For the stakeholder dashboard, double-click `Start-Demo.cmd` on Windows, or run:
+
+```sh
+python -m fairway_fusion.demo.server
+```
+
+Open `http://127.0.0.1:8765` for driver, iron, wedge and rejected-capture replays,
+calculated launch/spin, animated flight estimates, wind/surface controls and JSON
+import/export. See the [pre-alpha demo guide](docs/pre_alpha_demo.md) for the
+presentation walkthrough, sensor-data contract and accuracy limitations.
+
+The raw-image spin replay remains available separately:
+
 From the repository root after installation:
 
 ```sh
