@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "shot_id": "invalid-too-few",
+  "source": "simulation",
+  "scenario": "straight",
+  "seed": 42,
+  "input_stage": "reconstructed_ball_positions",
+  "noise_mm": 0.0,
+  "axes": "X downrange, Y left, Z up",
+  "samples": [
+    {
+      "t_ms": 0,
+      "x_mm": 0.0,
+      "y_mm": 0.0,
+      "z_mm": 21.335
+    }
+  ]
+}
