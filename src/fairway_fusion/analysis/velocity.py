@@ -1,4 +1,8 @@
-"""Estimate a golf ball's 3D velocity from timestamped positions."""
+"""Estimate early-flight 3D velocity from calibrated ball-center measurements.
+
+This module accepts SI-unit arrays, not raw camera pixels or simulator mm/ms
+packets. It uses an ordinary least-squares constant-velocity approximation.
+"""
 
 import numpy as np
 
@@ -25,6 +29,12 @@ def estimate_velocity(positions, times_s):
     ------
     ValueError
         If the input data is invalid.
+
+    Notes
+    -----
+    The slope is fitted independently for X, Y, and Z using all samples.
+    This estimates motion over the observation window; it does not correct
+    for gravity, reject outliers, or quantify measurement uncertainty.
     """
 
     try:
@@ -57,11 +67,13 @@ def estimate_velocity(positions, times_s):
     if np.any(np.diff(times) <= 0):
         raise ValueError("Timestamps must be strictly increasing")
 
-    # Center timestamps and positions for numerical stability
+    # Center each axis and time so regression does not depend on the origin.
+    # In particular, the slope is unaffected by a constant position offset.
     centered_times = times - np.mean(times)
     centered_positions = positions - np.mean(positions, axis=0)
 
-    # Calculate velocity using least-squares regression
+    # Ordinary least-squares slope: covariance(time, position) / variance(time).
+    # Broadcasting centered_times[:, None] fits all three axes at once.
     denominator = np.sum(centered_times ** 2)
 
     if denominator <= 0:
