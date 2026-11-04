@@ -2,7 +2,9 @@ import numpy as np
 import pytest
 from fairway_fusion.simulation import (
     SCENARIOS,
+    INVALID_CASES,
     generate_shot,
+    invalid_shot,
     calculation_input,
     analyze_samples,
     microphone_adc_example,
@@ -28,6 +30,12 @@ def test_millimetres_and_milliseconds_convert_to_si():
     assert positions[0] == pytest.approx([0.05, 0, 0.043])
     assert times == pytest.approx([0, 0.001])
     assert analyze_samples(packet)["speed_m_s"] == pytest.approx(np.hypot(50, 10))
+
+
+@pytest.mark.parametrize("case", INVALID_CASES)
+def test_invalid_samples_rejected(case):
+    with pytest.raises(ValueError):
+        analyze_samples(invalid_shot(case))
 
 
 def test_noise_reproducible_and_small_error():

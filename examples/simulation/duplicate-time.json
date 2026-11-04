@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "shot_id": "invalid-duplicate-time",
+  "source": "simulation",
+  "scenario": "straight",
+  "seed": 42,
+  "input_stage": "reconstructed_ball_positions",
+  "noise_mm": 0.0,
+  "axes": "X downrange, Y left, Z up",
+  "samples": [
+    {
+      "t_ms": 0,
+      "x_mm": 0.0,
+      "y_mm": 0.0,
+      "z_mm": 21.335
+    },
+    {
+      "t_ms": 1,
+      "x_mm": 48.29629131445341,
+      "y_mm": 0.0,
+      "z_mm": 34.275952255126036
+    },
+    {
+      "t_ms": 1,
+      "x_mm": 96.59258262890683,
+      "y_mm": 0.0,
+      "z_mm": 47.21690451025208
+    },
+    {
+      "t_ms": 3,
+      "x_mm": 144.88887394336024,
+      "y_mm": 0.0,
+      "z_mm": 60.15785676537811
+    },
+    {
+      "t_ms": 4,
+      "x_mm": 193.18516525781365,
+      "y_mm": 0.0,
+      "z_mm": 73.09880902050415
+    },
+    {
+      "t_ms": 5,
+      "x_mm": 241.48145657226706,
+      "y_mm": 0.0,
+      "z_mm": 86.03976127563018
+    }
+  ]
+}

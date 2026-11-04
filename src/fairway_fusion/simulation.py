@@ -1,15 +1,27 @@
-"""Reproducible trajectory input at the camera reconstruction boundary."""
+"""Person 5: reproducible trajectory input at the camera reconstruction boundary."""
+
+import argparse
+import copy
+import json
+from pathlib import Path
 
 import numpy as np
+
 from fairway_fusion.analysis.launch_angle import launch_metrics
 from fairway_fusion.analysis.velocity import estimate_velocity
-
 
 SCENARIOS = {
     "straight": (50.0, 15.0, 0.0),
     "high-launch": (35.0, 35.0, 0.0),
     "right-launch": (60.0, 12.0, -4.0),
 }
+INVALID_CASES = (
+    "duplicate-time",
+    "out-of-order",
+    "missing-coordinate",
+    "too-few",
+    "non-numeric",
+)
 
 
 def generate_shot(scenario="straight", seed=42, noise_mm=0.0):
@@ -50,6 +62,24 @@ def generate_shot(scenario="straight", seed=42, noise_mm=0.0):
         "axes": "X downrange, Y left, Z up",
         "samples": samples,
     }
+
+
+def invalid_shot(case):
+    packet = copy.deepcopy(generate_shot())
+    packet["shot_id"] = f"invalid-{case}"
+    if case == "duplicate-time":
+        packet["samples"][2]["t_ms"] = 1
+    elif case == "out-of-order":
+        packet["samples"][2]["t_ms"] = 0.5
+    elif case == "missing-coordinate":
+        del packet["samples"][2]["z_mm"]
+    elif case == "too-few":
+        packet["samples"] = packet["samples"][:1]
+    elif case == "non-numeric":
+        packet["samples"][2]["x_mm"] = "invalid"
+    else:
+        raise ValueError("Unknown invalid scenario")
+    return packet
 
 
 def calculation_input(packet):
@@ -111,3 +141,40 @@ def microphone_adc_example(seed=42, bits=12, reference_v=3.3):
         "trigger_time_ms": float(times[triggered[0]]) if len(triggered) else None,
     }
 
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--scenario", choices=(*SCENARIOS, *INVALID_CASES), default="straight"
+    )
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--noise-mm", type=float, default=0)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--analyze", action="store_true")
+    parser.add_argument(
+        "--adc", action="store_true", help="Emit separate microphone ADC illustration"
+    )
+    args = parser.parse_args()
+    packet = (
+        microphone_adc_example(args.seed)
+        if args.adc
+        else invalid_shot(args.scenario)
+        if args.scenario in INVALID_CASES
+        else generate_shot(args.scenario, args.seed, args.noise_mm)
+    )
+    if args.analyze:
+        if args.adc:
+            parser.error("ADC trigger data cannot be analyzed as ball positions")
+        try:
+            packet = {"input": packet, "result": analyze_samples(packet)}
+        except ValueError as exc:
+            parser.exit(2, f"Rejected simulated input: {exc}\n")
+    encoded = json.dumps(packet, indent=2, allow_nan=False) + "\n"
+    if args.output:
+        args.output.write_text(encoded, encoding="utf-8")
+    else:
+        print(encoded, end="")
+
+
+if __name__ == "__main__":
+    main()
