@@ -53,3 +53,36 @@ def test_invalid_velocity(velocity):
 def test_invalid_trajectory(positions, times):
     with pytest.raises(ValueError):
         estimate_launch_angle(positions, times)
+
+from fairway_fusion.analysis.launch_angle import (
+    calculate_ball_speed,
+    calculate_launch_direction,
+    launch_metrics,
+)
+
+
+def test_ball_speed():
+    velocity = [30.0, 0.0, 40.0]
+    assert np.isclose(calculate_ball_speed(velocity), 50.0)
+
+
+def test_launch_direction():
+    velocity = [40.0, -10.0, 15.0]
+
+    expected = np.degrees(np.arctan2(-10.0, 40.0))
+
+    assert np.isclose(
+        calculate_launch_direction(velocity),
+        expected
+    )
+
+
+def test_launch_metrics():
+    velocity = [48.296, 0.0, 12.941]
+
+    metrics = launch_metrics(velocity)
+
+    assert np.isclose(metrics["speed_m_s"], 50.0, atol=0.01)
+    assert np.isclose(metrics["speed_mph"], 111.85, atol=0.02)
+    assert np.isclose(metrics["launch_angle_deg"], 15.0, atol=0.01)
+    assert np.isclose(metrics["launch_direction_deg"], 0.0)
