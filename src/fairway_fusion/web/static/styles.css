@@ -112,3 +112,13 @@ button:disabled { opacity: .5; cursor: wait; }
   .status { width: 100%; padding-bottom: 8px; }
   .sess summary { flex-wrap: wrap; }
 }
+
+.table-scroll { max-width: 100%; overflow-x: auto; }
+.data-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.data-table th, .data-table td { padding: 14px 18px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.data-table th { font-size: 14px; color: var(--muted); background: var(--mist); }
+.data-table tbody tr:nth-child(even) { background: var(--mist); }
+.shot-link { min-height: 44px; background: transparent; border: 0; color: var(--fairway); font-weight: 700; text-decoration: underline; }
+.badge { display: inline-block; border: 1px solid var(--line); border-radius: 20px; padding: 4px 10px; font-size: 14px; }
+.samples { margin: 20px 0; }
+#recovery { padding: 18px; margin-bottom: 20px; border: 2px solid var(--flag); border-radius: 12px; }

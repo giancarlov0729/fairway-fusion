@@ -4,6 +4,108 @@ Fairway Fusion is a dual-camera computer vision golf launch monitor developed as
 
 The system aims to measure golf ball launch characteristics using high-speed imaging and computer vision techniques.
 
+## Current working demo
+
+The pre-alpha includes a Flask web interface, simulated shot inputs, launch calculations,
+and persistent SQLite history. Cameras are not required for this demo.
+
+Flow: browser → Flask API → simulated timestamped X/Y/Z positions → velocity and
+launch calculations → SQLite → results and history in the browser.
+
+### Run on Windows (PowerShell)
+
+From the repository root, first-time setup:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install Flask numpy pytest
+.\.venv\Scripts\python.exe -m pip install -e .
+```
+
+Each time you want to run the demo:
+
+```powershell
+.\.venv\Scripts\python.exe -m flask --app fairway_fusion.web.app:create_app run --host 127.0.0.1 --port 5000
+```
+
+Open http://localhost:5000. Keep the terminal open; Ctrl+C stops the server.
+No reinstall is needed on subsequent runs. If port 5000 is occupied by another
+server or SSH tunnel, use `--port 5001` and open http://localhost:5001.
+
+### Run on the Raspberry Pi
+
+From this branch's repository folder, first-time setup:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install Flask numpy pytest
+python -m pip install -e .
+```
+
+For subsequent runs:
+
+```bash
+source .venv/bin/activate
+python -m flask --app fairway_fusion.web.app:create_app run --host 127.0.0.1 --port 5000
+```
+
+To use the laptop browser with the Pi server, connect from the laptop using
+`ssh -L 5000:127.0.0.1:5000 fairway@fairway-fusion.local`, start Flask in that
+SSH session, then open http://localhost:5000 on the laptop. The machines must
+have network connectivity to each other. Run only one server process.
+
+### Presentation walkthrough
+
+1. Start a session and choose Straight, High launch, or Right launch.
+2. Press Simulate shot. The server calculates and saves the result.
+3. Expand View input samples to show the timestamps and positions used.
+4. Repeat with another scenario, then end the session.
+5. Open History and click a shot to retrieve its saved result and inputs.
+6. Refresh or restart Flask: saved history persists. Results restores the newest
+   shot in the active session, or the newest saved shot overall if no session is active.
+
+| Scenario | Speed (m/s) | Launch angle | Direction |
+| --- | --- | --- | --- |
+| Straight | 50 | 15° | 0° |
+| High launch | 35 | 35° | 0° |
+| Right launch | 60 | 12° | 4° right |
+
+These repeatable scenarios generate positions that are processed by the calculation
+code; they do not establish real-world camera accuracy. Positive direction is left;
+negative direction is right. Input tables use seconds and meters.
+
+### Storage, recovery, and limits
+
+- Default database: `src/instance/fairway.db` in an editable install. `FAIRWAY_DB`
+  overrides it. Laptop and Pi have separate databases unless deliberately copied.
+- Requests time out after 10 seconds. Reconnect restores server state; saves are
+  never automatically retried. A timed-out action may still have completed, so
+  check History before repeating it.
+- History displays the latest 50 sessions and up to 50 shots per session.
+- Spin, carry, total distance, camera capture, and shot scoring are not implemented
+  in this demo. No camera event stream is connected.
+- All UI assets are local; no internet is needed after installing dependencies.
+
+### Tests and main files
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+On the Pi, use `python -m pytest -q` with the virtual environment activated.
+
+- `src/fairway_fusion/web/`: Flask routes, HTML template, JavaScript, and CSS.
+- `src/fairway_fusion/services/shot_service.py`: coordinates simulation, analysis, and saving.
+- `src/fairway_fusion/simulation.py`: simulated position samples.
+- `src/fairway_fusion/analysis/`: velocity and launch metrics.
+- `src/fairway_fusion/storage/`: SQLite sessions and shot records.
+- `tests/`: automated checks.
+
+See [UI setup](docs/ui.md), [API contract](docs/server_api.md), and
+[storage documentation](docs/storage.md). The objectives below describe the
+larger project, including future hardware work.
+
 ## Project Objectives
 
 The primary measurements are:

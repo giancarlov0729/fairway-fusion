@@ -45,3 +45,17 @@ All saved data comes from SQLite through Flask. Browser mock data and localStora
 This is a simulation demo with no camera capture or shot stream. Spin, carry, total distance, and shot quality scoring are not implemented; the UI does not invent values for them. No internet connection or external assets are required after installation.
 
 On the Pi, activate its virtual environment and use the same Flask command with `python`. The existing SSH tunnel allows the laptop to open `http://127.0.0.1:5000` while Flask runs on the Pi.
+
+## Demo refinements
+
+Requests have a 10-second timeout, including reading the response body. Connection
+failures unlock the UI and offer Reconnect. Reconnect reads state without repeating
+writes; check History before retrying a save that may already have completed.
+
+On startup or reconnect, Results loads the latest shot in the active session, or
+latest overall if there is no active session. An empty active session has no result.
+This restores the latest saved result, not an older history selection or the selected tab.
+
+Results offers an expandable timestamp/X/Y/Z table from stored samples. History
+uses separate time, speed, angle, direction, and status columns; narrow screens
+can scroll the table horizontally.
