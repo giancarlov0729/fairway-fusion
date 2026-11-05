@@ -39,13 +39,13 @@ def preview_shot(scenario="straight"):                              # Function t
         **metrics,                                          # Insert each calculated metric into this dictionary
     }
 
-def save_simulated_shot(store, session_id, scenario="straight"):
-    result = preview_shot(scenario)
-    return store.save_shot(
-        session_id=session_id,
-        speed_m_s=result["speed_m_s"],
-        launch_angle_deg=result["launch_angle_deg"],
-        launch_direction_deg=result["launch_direction_deg"],
-        source="simulation",
-        samples=result["samples"],
+def save_simulated_shot(store, session_id, scenario="straight"):    # Function to generate a simulated shot, calculate metrics, and save results and input samples to database
+    result = preview_shot(scenario)                                     # Generate simulated shot + calculate metrics + store results in a dictionary
+    return store.save_shot(                                             # Call database object's save_shot() method to save the results and input samples to the database
+        session_id=session_id,                                              # Associate the shot with the current session
+        speed_m_s=result["speed_m_s"],                                      # Store the calculated speed in m/s
+        launch_angle_deg=result["launch_angle_deg"],                        # Store the calculated launch angle in degrees
+        launch_direction_deg=result["launch_direction_deg"],                # Store the calculated launch direction in degrees
+        source="simulation",                                                # Store the source of the shot as "simulation"
+        samples=result["samples"],                                          # Store the input samples (positions and timestamps) in the database
     )
