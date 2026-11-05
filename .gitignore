@@ -22,3 +22,7 @@ data/calibration/*
 !data/calibration/.gitkeep
 
 .env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

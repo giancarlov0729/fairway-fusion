@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fairway Fusion</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">Fairway Fusion</div>
+  <nav class="tabs" role="tablist" aria-label="Screens">
+    <button role="tab" data-act="tab" data-tab="session">Session</button>
+    <button role="tab" data-act="tab" data-tab="results">Results</button>
+    <button role="tab" data-act="tab" data-tab="history">History</button>
+  </nav>
+  <div id="status" class="status" aria-live="polite"></div>
+</header>
+<main>
+  <section id="view-session" class="view" role="tabpanel"></section>
+  <section id="view-results" class="view" role="tabpanel" hidden></section>
+  <section id="view-history" class="view" role="tabpanel" hidden></section>
+</main>
+<div id="toast" class="toast" role="alert" hidden></div>
+
+
+<script src="{{ url_for('static', filename='api.js') }}"></script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
