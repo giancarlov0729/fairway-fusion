@@ -35,10 +35,9 @@ from pathlib import Path  # builds the data/ folder path in a cross-platform way
 
 # --- Constants -------------------------------------------------------------
 
-# Where the database file lives if nobody specifies otherwise. This path is
-# relative to wherever the server is started, normally the repository root.
-# The file is listed in .gitignore so personal test data is never committed.
-DEFAULT_DB_PATH = Path("data/fairway.db")
+# Keep the default shared with Flask and preserve existing server history.
+# This path is independent of the working directory for editable installs.
+DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "instance" / "fairway.db"
 
 # Exact conversion factor: 1 m/s = 2.2369362921 mph. Used only when shots are
 # read back, so the UI can show mph without the database ever storing it.
@@ -352,7 +351,7 @@ class ShotStore:
         reason=None,
         launch_direction_deg=None,
         spin_rpm=None,
-        source="simulated",
+        source="simulation",
         samples=None,
         session_id=None,
     ):

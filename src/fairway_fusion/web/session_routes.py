@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 from threading import RLock
 
 from flask import jsonify, request
@@ -7,10 +6,11 @@ from werkzeug.exceptions import BadRequest
 
 from fairway_fusion.storage import ShotStore, NotFoundError, SessionStateError
 from fairway_fusion.services.shot_service import save_simulated_shot
+from fairway_fusion.storage.database import DEFAULT_DB_PATH
 
 
 def register_session_routes(app):
-    default_path = Path(app.instance_path) / 'fairway.db'
+    default_path = DEFAULT_DB_PATH
     database_path = app.config.get('DATABASE_PATH')
     if database_path is None:
         database_path = os.environ.get('FAIRWAY_DB') or default_path
