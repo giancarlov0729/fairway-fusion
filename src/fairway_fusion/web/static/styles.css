@@ -1,0 +1,114 @@
+:root {
+  --mist: #e8ece6;
+  --paper: #f6f7f3;
+  --ink: #14231c;
+  --muted: #5b6b62;
+  --fairway: #2f6b4a;
+  --flag: #e2483d;
+  --sand: #d9cfb4;
+  --line: #c9d1c8;
+  font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --mist: #16221c; --paper: #1d2c24; --ink: #eef2ec;
+    --muted: #9badA3; --fairway: #6fc095; --flag: #ef5b50; --sand: #6b6446; --line: #31443a;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--mist); color: var(--ink); font-size: 18px; line-height: 1.4; }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 3px solid var(--fairway); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+/* Top bar */
+.bar { display: flex; align-items: center; gap: 24px; padding: 0 20px; height: 60px;
+  background: var(--paper); border-bottom: 1px solid var(--line); }
+.brand { font-weight: 800; letter-spacing: -.01em; font-size: 20px; }
+.tabs { display: flex; gap: 4px; flex: 1; }
+.tabs button { background: none; border: 0; height: 60px; padding: 0 18px; font-weight: 600; color: var(--muted);
+  border-bottom: 4px solid transparent; }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--flag); }
+.status { font-size: 15px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.status.live { color: var(--fairway); font-weight: 700; }
+.status.live::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--flag); margin-right: 8px; }
+
+main { padding: 24px 28px; max-width: 1100px; margin: 0 auto; }
+h1 { font-size: 40px; line-height: 1.05; letter-spacing: -.02em; margin: 0 0 12px; }
+h2 { font-size: 22px; margin: 0 0 12px; }
+p { margin: 0 0 20px; max-width: 52ch; }
+.muted { color: var(--muted); }
+.small { font-size: 14px; }
+
+/* Buttons: large touch targets for the LCD */
+.btn { min-height: 60px; padding: 0 28px; border-radius: 10px; border: 2px solid var(--ink); background: transparent; font-weight: 700; }
+.btn.primary { background: var(--flag); border-color: var(--flag); color: #fff; }
+.btn.go { background: var(--fairway); border-color: var(--fairway); color: #fff; }
+.btn:disabled { opacity: .5; cursor: progress; }
+.row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin: 8px 0 16px; }
+
+/* Session facts */
+.facts { display: flex; gap: 40px; margin: 8px 0 24px; }
+.fig { font-size: 44px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.fig small { font-size: 17px; font-weight: 600; color: var(--muted); letter-spacing: 0; margin-left: 4px; }
+.cap { font-size: 15px; color: var(--muted); margin-top: 6px; }
+
+/* Results */
+.hero { display: grid; grid-template-columns: 1fr 150px; gap: 20px; align-items: center;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 16px 20px; }
+.arc { width: 100%; height: auto; max-height: 190px; }
+.arc .ground { stroke: var(--sand); stroke-width: 4; }
+.arc .path { fill: none; stroke: var(--flag); stroke-width: 4; stroke-linecap: round;
+  stroke-dasharray: 1; stroke-dashoffset: 1; animation: fly 1.1s ease-out forwards; }
+.arc .ball { fill: var(--ink); opacity: 0; animation: pop .2s 1s forwards; }
+@keyframes fly { to { stroke-dashoffset: 0; } }
+@keyframes pop { to { opacity: 1; } }
+.score { text-align: center; }
+.ring { width: 120px; height: 120px; transform: rotate(-90deg); }
+.ring circle { fill: none; stroke-width: 10; }
+.ring .track { stroke: var(--line); }
+.ring .val { stroke: var(--fairway); stroke-linecap: round; }
+.score .num { margin-top: -84px; font-size: 40px; font-weight: 800; line-height: 1; height: 44px; font-variant-numeric: tabular-nums; }
+.score .lab { margin-top: 38px; font-weight: 700; font-size: 16px; }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); margin-top: 18px;
+  border-top: 2px solid var(--ink); }
+.metrics div { padding: 14px 12px 6px 0; }
+
+/* History */
+.sess { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 12px; }
+.sess summary { list-style: none; padding: 16px 20px; display: flex; justify-content: space-between; gap: 16px; cursor: pointer; min-height: 60px; align-items: center; }
+.sess summary::-webkit-details-marker { display: none; }
+.sess .sum { color: var(--muted); font-variant-numeric: tabular-nums; }
+.shots { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.shots th { text-align: left; font-size: 14px; color: var(--muted); font-weight: 600; padding: 6px 20px; }
+.shots td { padding: 0; border-top: 1px solid var(--line); }
+.shots button { width: 100%; text-align: left; background: none; border: 0; padding: 12px 20px; min-height: 52px; }
+.shots tr:hover td { background: var(--mist); }
+
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--paper);
+  padding: 14px 22px; border-radius: 10px; font-weight: 600; max-width: 90vw; }
+
+@media (max-width: 640px) {
+  .bar { gap: 8px; padding: 0 10px; } .brand { display: none; }
+  .tabs button { padding: 0 12px; } main { padding: 16px; } h1 { font-size: 32px; }
+  .hero { grid-template-columns: 1fr; } .facts { gap: 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .arc .path { animation: none; stroke-dashoffset: 0; } .arc .ball { animation: none; opacity: 1; }
+}
+
+select { font: inherit; padding: 12px; min-height: 52px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
+.demo-note { margin-top: 24px; }
+.shot-row { display: block; width: 100%; text-align: left; padding: 16px 20px; min-height: 60px; border: 0; border-top: 1px solid var(--line); background: transparent; }
+.shot-row:hover { background: var(--mist); }
+.empty { padding: 0 20px; }
+button:disabled { opacity: .5; cursor: wait; }
+@media (max-width: 640px) {
+  .bar { flex-wrap: wrap; height: auto; }
+  .status { width: 100%; padding-bottom: 8px; }
+  .sess summary { flex-wrap: wrap; }
+}

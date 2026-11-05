@@ -1,6 +1,6 @@
 
-# Flask creates server, jsonify builds JSON responses, request handles incoming requests
-from flask import Flask, jsonify, request
+# Flask creates server, jsonify builds JSON responses, request handles incoming requests, render_template serves HTML
+from flask import Flask, jsonify, request, render_template
 
 # HTTPException represents errors like 404 Not Found, 500 Internal Server Error, etc.
 from werkzeug.exceptions import HTTPException
@@ -25,12 +25,8 @@ def create_app(test_config=None):
     @app.get("/")                                       
     def index():
 
-        # Browser displays this JSON until we add the HTML interface
-        return jsonify(
-            application="Fairway Fusion",
-            message="Server foundation is running.",
-            health_url="/api/health",
-        )
+        # Browser displays the integrated session, results, and history interface.
+        return render_template("index.html")
 
     @app.get("/api/health")
     def health():
