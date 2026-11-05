@@ -1,58 +1,118 @@
-"""Basic vertical launch angle from a calibrated, early-flight 3D trajectory.
+"""Calculate golf ball launch metrics from a 3D velocity vector.
 
-Coordinates: x is downrange, y is sideways, and z is up. Inputs must be in
-world coordinates with consistent distance units, NOT raw image pixels.
+Coordinates:
+    +X: Downrange
+    +Y: Left
+    +Z: Up
+
+Velocity components must be measured in meters per second.
+Angles are measured in degrees; +Y corresponds to a leftward launch.
 """
 
 import math
 
 import numpy as np
 
+from fairway_fusion.analysis.velocity import estimate_velocity
+
+
+MPS_TO_MPH = 2.2369362921
+
 
 def calculate_launch_angle(velocity) -> float:
-    """Return elevation in degrees above the horizontal ground plane.
+    """Return elevation relative to the horizontal plane, in degrees.
 
-    ``velocity`` is (vx, vy, vz). Positive angles mean rising flight;
-    negative angles mean descending flight. This does not calculate azimuth.
+    Uses atan2(vz, horizontal_speed); zero velocity has no defined angle.
     """
+
     vector = np.asarray(velocity, dtype=float)
+
     if vector.shape != (3,) or not np.isfinite(vector).all():
-        raise ValueError("velocity must contain three finite components")
+        raise ValueError("Velocity must contain three finite components")
+
     vx, vy, vz = vector
+
     if not np.any(vector):
-        raise ValueError("launch angle is undefined for zero velocity")
-    return math.degrees(math.atan2(vz, math.hypot(vx, vy)))
+        raise ValueError("Launch angle is undefined for zero velocity")
+
+    horizontal_speed = math.hypot(vx, vy)
+
+    return math.degrees(math.atan2(vz, horizontal_speed))
 
 
 def estimate_launch_angle(positions, timestamps) -> float:
-    """Fit a straight trajectory and return its vertical angle in degrees.
+    """Fit early-flight velocity and return its vertical angle.
 
-    Args:
-        positions: N x 3 calibrated positions, preferably in meters.
-        timestamps: N strictly increasing capture times in seconds.
-
-    Supply at least two samples from the first few milliseconds AFTER impact.
-    A least-squares line uses all supplied samples and supports uneven timing.
-    This is an average direction over the supplied window, not a gravity/drag
-    model or a validated launch measurement. It does not reject outliers.
+    Positions and timestamps are in meters and seconds respectively.
+    The estimate is an average direction over the fitted observation window.
     """
-    points = np.asarray(positions, dtype=float)
-    times = np.asarray(timestamps, dtype=float)
-    if points.ndim != 2 or points.shape[1] != 3 or len(points) < 2:
-        raise ValueError("positions must have shape (N, 3), with N >= 2")
-    if times.shape != (len(points),):
-        raise ValueError("provide one timestamp per position")
-    if not np.isfinite(points).all() or not np.isfinite(times).all():
-        raise ValueError("positions and timestamps must be finite")
-    if not np.all(np.diff(times) > 0):
-        raise ValueError("timestamps must be strictly increasing")
 
-    # Subtract the first timestamp before centering to reduce numerical loss
-    # when callers supply absolute rather than relative capture timestamps.
-    elapsed = times - times[0]
-    centered_time = elapsed - elapsed.mean()
-    centered_positions = points - points.mean(axis=0)
-    velocity = (centered_time @ centered_positions) / (
-        centered_time @ centered_time
-    )
+    velocity = estimate_velocity(positions, timestamps)
+
     return calculate_launch_angle(velocity)
+
+
+def calculate_ball_speed(velocity) -> float:
+    """Return the Euclidean magnitude of a 3D velocity vector in m/s."""
+
+    vector = np.asarray(velocity, dtype=float)
+
+    if vector.shape != (3,) or not np.isfinite(vector).all():
+        raise ValueError("Velocity must contain three finite components")
+
+    return float(np.linalg.norm(vector))
+
+
+def calculate_launch_direction(velocity) -> float:
+    """Calculate horizontal launch direction in degrees.
+
+    Positive angles indicate leftward launch.
+    Negative angles indicate rightward launch.
+    The angle is undefined if horizontal velocity is zero.
+    """
+
+    vector = np.asarray(velocity, dtype=float)
+
+    if vector.shape != (3,) or not np.isfinite(vector).all():
+        raise ValueError("Velocity must contain three finite components")
+
+    vx, vy, _ = vector
+
+    if math.hypot(vx, vy) == 0:
+        raise ValueError("Launch direction is undefined without horizontal motion")
+
+    return math.degrees(math.atan2(vy, vx))
+
+
+def launch_metrics(velocity) -> dict:
+    """Return the metrics expected by the simulator/server handoff.
+
+    The speed is always numeric. Undefined elevation (zero 3D velocity) or
+    direction (zero horizontal velocity) is represented by None, matching
+    the existing simulator contract. No spin or carry is inferred here.
+    """
+
+    speed_m_s = calculate_ball_speed(velocity)
+
+    launch_angle = (
+        calculate_launch_angle(velocity)
+        if speed_m_s > 0
+        else None
+    )
+
+    vector = np.asarray(velocity, dtype=float)
+
+    horizontal_speed = math.hypot(vector[0], vector[1])
+
+    launch_direction = (
+        calculate_launch_direction(velocity)
+        if horizontal_speed > 0
+        else None
+    )
+
+    return {
+        "speed_m_s": speed_m_s,
+        "speed_mph": speed_m_s * MPS_TO_MPH,
+        "launch_angle_deg": launch_angle,
+        "launch_direction_deg": launch_direction,
+    }

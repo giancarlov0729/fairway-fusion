@@ -1,9 +1,15 @@
 
-# Flask creates server, jsonify builds JSON responses
-from flask import Flask, jsonify
+# Flask creates server, jsonify builds JSON responses, request handles incoming requests
+from flask import Flask, jsonify, request
 
 # HTTPException represents errors like 404 Not Found, 500 Internal Server Error, etc.
 from werkzeug.exceptions import HTTPException
+
+# Proviides HTTP 400 Bad Request
+from werkzeug.exceptions import BadRequest
+
+# Coordinates calculations 
+from fairway_fusion.services.shot_service import preview_shot
 
 # Create Flask application instance
 def create_app(test_config=None):
@@ -71,6 +77,24 @@ def create_app(test_config=None):
                 "message": "An unexpected server error occurred.",
             }
         ), 500
+
+    @app.post("/api/shots/preview")  # Register a POST endpoint for unsaved previews.
+    def preview():
+        payload = request.get_json()  # Parse JSON; Flask rejects invalid JSON/content types.
+
+        if not isinstance(payload, dict):  # Require a JSON object rather than a list or null.
+            raise BadRequest("The request body must be a JSON object.")
+
+        scenario = payload.get("scenario", "straight")  # Default to the straight sample.
+
+        try:  # Convert expected input-validation failures into HTTP 400 responses.
+            result = preview_shot(scenario)  # Generate observations and calculate metrics.
+        except ValueError as error:  # Catch validation failures from the workflow.
+            raise BadRequest(str(error)) from error  # Use our existing JSON error handler.
+
+        return jsonify(result)  # Send the calculated preview back to the browser.
+
+
 
     # Return the configured app to Flask or the test runner.
     return app 
