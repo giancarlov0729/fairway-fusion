@@ -16,6 +16,8 @@ env/
 data/recordings/*
 data/sample_frames/*
 data/calibration/*
+data/*.db
+data/*.db-journal
 
 !data/recordings/.gitkeep
 !data/sample_frames/.gitkeep

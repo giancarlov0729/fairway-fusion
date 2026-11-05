@@ -35,10 +35,23 @@ from pathlib import Path  # builds the data/ folder path in a cross-platform way
 
 # --- Constants -------------------------------------------------------------
 
-# Where the database file lives if nobody specifies otherwise. This path is
-# relative to wherever the server is started, normally the repository root.
+# Where the database file lives if nobody specifies otherwise.
+#
+# The path is built from THIS file's location, not from whatever folder the
+# server happens to be started in. __file__ is the path to database.py, and
+# .parents walks up the folder tree from it:
+#   parents[0] = src/fairway_fusion/storage
+#   parents[1] = src/fairway_fusion
+#   parents[2] = src
+#   parents[3] = the repository root (fairway-fusion/)
+# So the database always lands in fairway-fusion/data/fairway.db, whether the
+# server is started from the repo root, the home folder, or anywhere else.
+#
+# This relies on the project being installed with "pip install -e ." (the
+# editable install the README uses), so database.py stays inside the repo.
+#
 # The file is listed in .gitignore so personal test data is never committed.
-DEFAULT_DB_PATH = Path("data/fairway.db")
+DEFAULT_DB_PATH = Path(__file__).resolve().parents[3] / "data" / "fairway.db"
 
 # Exact conversion factor: 1 m/s = 2.2369362921 mph. Used only when shots are
 # read back, so the UI can show mph without the database ever storing it.
