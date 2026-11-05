@@ -78,23 +78,21 @@ def create_app(test_config=None):
             }
         ), 500
 
-    @app.post("/api/shots/preview")  # Register a POST endpoint for unsaved previews.
+    @app.post("/api/shots/preview")                                 # Register a POST endpoint for unsaved previews
     def preview():
-        payload = request.get_json()  # Parse JSON; Flask rejects invalid JSON/content types.
+        payload = request.get_json()                                        # Parse JSON data sent with request
 
-        if not isinstance(payload, dict):  # Require a JSON object rather than a list or null.
+        if not isinstance(payload, dict):                                   # Checks whether payload is a dictionary (JSON object)
             raise BadRequest("The request body must be a JSON object.")
 
-        scenario = payload.get("scenario", "straight")  # Default to the straight sample.
+        scenario = payload.get("scenario", "straight")                      # Gets the value of scenario from payload, defaulting to straight
 
-        try:  # Convert expected input-validation failures into HTTP 400 responses.
-            result = preview_shot(scenario)  # Generate observations and calculate metrics.
-        except ValueError as error:  # Catch validation failures from the workflow.
-            raise BadRequest(str(error)) from error  # Use our existing JSON error handler.
+        try:                                                                # Convert expected input-validation failures into HTTP 400 responses
+            result = preview_shot(scenario)                                     # Generate observations and calculate metrics
+        except ValueError as error:                                         # Catch validation failures from the workflow
+            raise BadRequest(str(error)) from error                             # Use our existing JSON error handler
 
-        return jsonify(result)  # Send the calculated preview back to the browser.
-
-
+        return jsonify(result)                                              # Send the calculated preview back to the browser
 
     # Return the configured app to Flask or the test runner.
     return app 
