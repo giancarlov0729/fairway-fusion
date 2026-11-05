@@ -76,7 +76,19 @@ asymmetric dot correspondence, 3D spin rate/axis, launch measurements, quality r
 Pi capture utilities and provisional Pico PIO timing firmware. Hardware qualification
 and validation against real shots remain outstanding.
 
-## Run the spin demo
+## Simulation and Pi deployment (Person 5)
+
+The `feature/simulation-pi` branch adds timestamped X/Y/Z sample generation for the
+team's simpler pre-alpha speed/launch calculations. The existing stakeholder demo
+is preserved. See [simulation/Pi handoff](docs/simulation_pi.md) for the sample
+contract, invalid inputs, deployment scripts and full-team verification checklist.
+
+```sh
+python -m fairway_fusion.simulation --scenario straight --analyze
+python scripts/verify_simulation.py
+```
+
+### Preserved stakeholder and optical demos
 
 For the stakeholder dashboard, double-click `Start-Demo.cmd` on Windows, or run:
 
