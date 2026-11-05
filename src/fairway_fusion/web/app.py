@@ -10,6 +10,7 @@ from werkzeug.exceptions import BadRequest
 
 # Coordinates calculations 
 from fairway_fusion.services.shot_service import preview_shot
+from fairway_fusion.web.session_routes import register_session_routes
 
 # Create Flask application instance
 def create_app(test_config=None):
@@ -93,6 +94,8 @@ def create_app(test_config=None):
             raise BadRequest(str(error)) from error                             # Use our existing JSON error handler
 
         return jsonify(result)                                              # Send the calculated preview back to the browser
+
+    register_session_routes(app)
 
     # Return the configured app to Flask or the test runner.
     return app 

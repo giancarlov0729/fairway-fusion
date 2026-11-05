@@ -5,3 +5,4 @@ matplotlib
 PyYAML
 pyserial
 pytest
+Flask>=3.1,<4

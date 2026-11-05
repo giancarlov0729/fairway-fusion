@@ -28,9 +28,24 @@ def preview_shot(scenario="straight"):                              # Function t
 
     return {                                                
         "preview_id": str(uuid4()),                         # Newly generated ID converted to string
-        "source": "simulation",                             # Labels data as simulated rather than persisted
+        "source": "simulation",                             # Identifies the observations as simulated
         "scenario": scenario,                               # Identify the chosen sample trajectory
         "saved": False,                                     # Explicitly indicate that no database write occurred
         "velocity_m_s": velocity.tolist(),                  # Convert the NumPy array into a list
+        "samples": {
+            "positions_m": positions_m.tolist(),
+            "timestamps_s": times_s.tolist(),
+        },
         **metrics,                                          # Insert each calculated metric into this dictionary
     }
+
+def save_simulated_shot(store, session_id, scenario="straight"):
+    result = preview_shot(scenario)
+    return store.save_shot(
+        session_id=session_id,
+        speed_m_s=result["speed_m_s"],
+        launch_angle_deg=result["launch_angle_deg"],
+        launch_direction_deg=result["launch_direction_deg"],
+        source="simulation",
+        samples=result["samples"],
+    )
