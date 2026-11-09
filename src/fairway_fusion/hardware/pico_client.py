@@ -37,4 +37,32 @@ class PicoClient:    # Manage 1 connection to the Pico
                 self._close()                                       # Close port
                 raise PicoError(str(error)) from error              # Report error 
 
+    def command(self, command):                                 # Send supported command to Pico 
+        if command not in self.EXPECTED:                            # IF command is not supported                                            
+            raise ValueError("Supported commands: HELLO, PING, STATUS, DISARM.")    # Reject
+        
+        with self._lock:                                            # Allow 1 thread to use connection at a time
+
+            if self._serial is None:                                    # Check if connection is open
+                raise PicoError("Pico is disconnected; connect it first.")  # Missing connection, report it
+            
+            try:                                                        # Attempt to send command
+                return self._exchange(command)                              # Send command + return checked reply
+            
+            except (OSError, ValueError, PicoError) as error:           # Catch errors
+                self._close()                                               # Close connection
+                raise PicoError(str(error)) from error                      # Report error 
+
+    def close(self):                    # Public close connection method
+        with self._lock:                    # Wait until other operations are done
+            self._close()                       # Close connection
+
+    def _close(self):                               # Internal cleanup                            
+        connection, self._serial = self._serial, None   # Save old connection + mark it disconnected
+        if connection is not None:                      # Is there a connection to close?
+            try:                                            # Attempt to release
+                connection.close()                              # Close port
+            except OSError:                                 # Handle errors w/ unplugged device
+                pass                                            # Continue
+
     
