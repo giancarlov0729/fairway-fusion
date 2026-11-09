@@ -106,6 +106,50 @@ See [UI setup](docs/ui.md), [API contract](docs/server_api.md), and
 [storage documentation](docs/storage.md). The objectives below describe the
 larger project, including future hardware work.
 
+## Stereo vision prototype
+
+From the repository root, activate the existing virtual environment.
+If you need one, create it with `python -m venv .venv` first.
+
+```bash
+python -m pip install -r requirements.txt
+python -m pip install -e .
+python scripts/analyze_shot.py
+python scripts/analyze_shot.py --missing-frame
+python -m pytest -q tests/test_vision_pipeline.py
+```
+
+The first demo prints a launch result from two synthetic monochrome images.
+The second demonstrates a rejected capture. Both run without cameras or Flask.
+
+Save annotated camera views and example payloads for integration:
+
+```bash
+python scripts/analyze_shot.py --overlay accepted.png > accepted.json
+python scripts/analyze_shot.py --case shallow --overlay rejected.png > rejected.json
+```
+
+The numbered circles show the accepted flash matches across both cameras.
+Crosses mark detected centers. Rejected captures show the reason and any
+available detections. The synthetic cases establish this baseline:
+
+| Case | Expected result |
+| --- | --- |
+| `clean` | Accepted, with rightward direction |
+| `leftward` | Accepted, with leftward direction |
+| `blur` | Accepted with mild simulated blur |
+| `uneven-light` | Accepted with a dimmer second flash |
+| `shallow` | Rejected when both stereo pairings fit |
+| `clutter` | Rejected when a third round object is detected |
+| `--missing-frame` | Rejected when camera B is missing |
+
+`analyze_stereo_shot` in `pipeline.py` takes two 8-bit monochrome images,
+their camera calibrations, and the optical flash interval in seconds. It
+returns positions in meters, relative timestamps, launch metrics, and
+reprojection errors on success, or a reason on rejection. The detector
+expects two isolated bright ball silhouettes per view. Flash ordering
+assumes forward motion. See [calibration](docs/calibration.md) for the camera model.
+
 ## Project Objectives
 
 The primary measurements are:
