@@ -18,7 +18,7 @@ set(CMAKE_C_STANDARD 11)
 
 pico_sdk_init()
 
-add_executable(fairway_pico_usb main.c sequence.c)
+add_executable(fairway_pico_usb main.c controller.c sequence.c)
 
 pico_generate_pio_header(fairway_pico_usb ${CMAKE_CURRENT_LIST_DIR}/capture.pio)
 target_link_libraries(fairway_pico_usb pico_stdlib hardware_pio hardware_watchdog pico_rand)
