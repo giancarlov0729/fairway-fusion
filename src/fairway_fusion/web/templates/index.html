@@ -4,27 +4,117 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fairway Fusion</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+<link rel="stylesheet" href="{{ url_for('static',filename='styles.css') }}">
 </head>
 <body>
 <header class="bar">
-  <div class="brand">Fairway Fusion</div>
-  <nav class="tabs" role="tablist" aria-label="Screens">
-    <button role="tab" data-act="tab" data-tab="session">Session</button>
-    <button role="tab" data-act="tab" data-tab="results">Results</button>
-    <button role="tab" data-act="tab" data-tab="history">History</button>
-  </nav>
-  <div id="status" class="status" aria-live="polite"></div>
+<div class="brand">Fairway Fusion</div>
+<nav class="tabs" aria-label="Screens">{% for label,endpoint in [('Session','index'),('Results','results'),('History','history')] %}<a href="{{ url_for(endpoint) }}">{{ label }}</a>{% endfor %}</nav>
+<span class="status">{{ 'Session #' ~ active.id if active else 'Ready' }}</span>
 </header>
-<main>
-  <section id="view-session" class="view" role="tabpanel"></section>
-  <section id="view-results" class="view" role="tabpanel" hidden></section>
-  <section id="view-history" class="view" role="tabpanel" hidden></section>
+<main>{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}
+
+{% macro fields() %}<input type="hidden" name="token" value="{{ token }}">{% if active %}<input type="hidden" name="session_id" value="{{ active.id }}">{% endif %}
+{% endmacro %}
+{% macro num(v, p=1) %}{{ ('%.*f'|format(p,v)) if v is not none else '—' }}{% endmacro %}
+{% if view == 'session' %}<h1>{{ 'Session in progress' if active else 'Ready when you are' }}</h1>
+<p class="muted">Simulation demo · Real camera capture is not connected yet.</p>
+{% if active %}<div class="facts">
+<div>
+<div class="fig">{{ active.shot_count }}</div>
+<div class="cap">Saved shots</div>
+</div>
+</div>
+<p>Started: {{ active.started_at }} (UTC)</p>
+<form method="post" action="{{ url_for('page_action',action='simulate') }}">{{ fields() }}<div class="row">
+<label for="scenario">Shot scenario</label>
+<select id="scenario" name="scenario">
+<option value="straight">Straight</option>
+<option value="high-launch">High launch</option>
+<option value="right-launch">Right launch</option>
+</select>
+<button class="btn go">Simulate shot</button>
+</div>
+</form>
+<form method="post" action="{{ url_for('page_action',action='end') }}">{{ fields() }}<button class="btn">End session</button>
+</form>
+{% else %}<p>Start a session to calculate and save simulated shots.</p>
+<form method="post" action="{{ url_for('page_action',action='start') }}">{{ fields() }}<button class="btn primary">Start session</button>
+</form>{% endif %}
+
+{% elif view == 'results' %}{% if shot %}<h1>Shot #{{ shot.id }}</h1>
+<p>{{ shot.created_at }} (UTC) · Session #{{ shot.session_id }}<br>Source: {{ shot.source }} · {{ shot.status }} · Saved in SQLite</p>{% if shot.reason %}<p>{{ shot.reason }}</p>{% endif %}
+
+<div class="metrics">{% for value,unit,label in [(shot.speed_mph,'mph','Ball speed'),(shot.speed_m_s,'m/s','Ball speed'),(shot.launch_angle_deg,'°','Launch angle'),(shot.launch_direction_deg,'°','Direction: + left / − right')] %}<div>
+<div class="fig">{{ num(value) }}<small>{{ unit }}</small>
+</div>
+<div class="cap">{{ label }}</div>
+</div>{% endfor %}</div>
+<p class="muted">Spin, carry and total distance are not calculated in this demo.</p>
+{% if shot.samples and shot.samples.timestamps_s %}<details class="sess samples">
+<summary>View input samples ({{ shot.samples.timestamps_s|length }})</summary>
+<p>X = downrange, Y = left, Z = up.</p>
+<div class="table-scroll">
+<table class="data-table">
+<thead>
+<tr>
+<th>Sample</th>
+<th>Time (s)</th>
+<th>X (m)</th>
+<th>Y (m)</th>
+<th>Z (m)</th>
+</tr>
+</thead>
+<tbody>{% for t in shot.samples.timestamps_s %}<tr>
+<td>{{ loop.index }}</td>
+<td>{{ num(t,6) }}</td>{% for v in shot.samples.positions_m[loop.index0] %}<td>{{ num(v,6) }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+</table>
+</div>
+</details>{% else %}<p>Input samples unavailable.</p>{% endif %}
+
+{% else %}<h1>No saved shots yet</h1>{% endif %}
+<a class="btn" href="{{ url_for('index') }}">Go to session</a>
+{% else %}<h1>Shot history</h1>
+<form method="get" action="{{ url_for('history') }}" class="row">
+<label for="filter">Session</label>
+<select id="filter" name="session_id">
+<option value="">All sessions</option>{% for s in sessions %}<option value="{{ s.id }}" {% if selected == s.id %}selected{% endif %}
+>#{{ s.id }} · {{ s.shot_count }} shots · {{ 'Active' if s.active else 'Ended' }}</option>{% endfor %}</select>
+<button class="btn">Filter</button>
+</form>
+<p class="muted">Latest 50 shots · Timestamps in UTC</p>
+<div class="table-scroll">
+<table class="data-table">
+<thead>
+<tr>
+<th>Shot</th>
+<th>Time</th>
+<th>Session</th>
+<th>Speed (mph)</th>
+<th>Launch (°)</th>
+<th>Direction (°)</th>
+<th>Source</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>{% for s in shots %}<tr>
+<td>
+<a href="{{ url_for('result_detail',shot_id=s.id) }}">#{{ s.id }}</a>
+</td>
+<td>{{ s.created_at }}</td>
+<td>{{ s.session_id }}</td>
+<td>{{ num(s.speed_mph) }}</td>
+<td>{{ num(s.launch_angle_deg) }}</td>
+<td>{{ num(s.launch_direction_deg) }}</td>
+<td>{{ s.source }}</td>
+<td>{{ s.status }}</td>
+</tr>{% else %}<tr>
+<td colspan="8">No shots in this selection.</td>
+</tr>{% endfor %}</tbody>
+</table>
+</div>{% endif %}
+
+<p class="muted small refresh-note">Pages update when you navigate or refresh. If a request is interrupted, check Results or History before trying again.</p>
 </main>
-<div id="toast" class="toast" role="alert" hidden></div>
-
-
-<script src="{{ url_for('static', filename='api.js') }}"></script>
-<script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

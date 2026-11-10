@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"fairway_fusion.web" = ["templates/*.html", "static/*.css", "static/*.js"]
+"fairway_fusion.web" = ["templates/*.html", "static/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

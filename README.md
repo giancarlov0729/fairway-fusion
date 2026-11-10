@@ -95,7 +95,7 @@ negative direction is right. Input tables use seconds and meters.
 
 On the Pi, use `python -m pytest -q` with the virtual environment activated.
 
-- `src/fairway_fusion/web/`: Flask routes, HTML template, JavaScript, and CSS.
+- `src/fairway_fusion/web/`: Flask routes, server-rendered Jinja HTML templates, and CSS (no JavaScript).
 - `src/fairway_fusion/services/shot_service.py`: coordinates simulation, analysis, and saving.
 - `src/fairway_fusion/simulation.py`: simulated position samples.
 - `src/fairway_fusion/analysis/`: velocity and launch metrics.
@@ -195,3 +195,19 @@ Computer Engineering Senior Design
 ## License
 
 To be determined.
+
+
+### JavaScript-free interface
+
+The browser uses HTML links and POST forms. Python/Flask renders Session, Results,
+and History; native HTML details expands input samples. No JavaScript runtime,
+framework, CDN, or npm build is required. A Content Security Policy blocks scripts.
+Run the server with `--no-reload` when the Pico is connected.
+
+Form submissions redirect to GET pages, so refreshing a result does not save another
+shot. Single-use form tokens reject repeated submissions. Tokens live in one server
+process; use a single process. After a restart or expired form, refresh Session before
+submitting again. Results and history are restored from SQLite. During a connection
+failure, revisit Results/History before retrying a write. There is no automatic
+reconnect, live timer, or background refresh; pages update on navigation or refresh.
+See docs/ui.md for the interface and testing details.

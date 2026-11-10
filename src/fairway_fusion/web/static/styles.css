@@ -122,3 +122,9 @@ button:disabled { opacity: .5; cursor: wait; }
 .badge { display: inline-block; border: 1px solid var(--line); border-radius: 20px; padding: 4px 10px; font-size: 14px; }
 .samples { margin: 20px 0; }
 #recovery { padding: 18px; margin-bottom: 20px; border: 2px solid var(--flag); border-radius: 12px; }
+
+.tabs a {display:flex;align-items:center;padding:0 18px;min-height:60px;color:var(--ink);text-decoration:none;}
+a.btn {display:inline-flex;align-items:center;text-decoration:none;color:var(--ink);margin-top:16px;}
+.notice {padding:16px;border:2px solid var(--flag);border-radius:10px;}
+.refresh-note {margin-top:28px;}
+@media(max-width:700px){.bar{height:auto;flex-wrap:wrap;gap:8px;padding:8px 12px}.tabs a{padding:0 10px}main{padding:18px 12px}}

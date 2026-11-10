@@ -1,4 +1,3 @@
-"""Person 5: reproducible trajectory input at the camera reconstruction boundary."""
 
 import argparse
 import copy

@@ -23,7 +23,7 @@ def test_ui_and_assets_are_served(tmp_path):
     assert response.mimetype == 'text/html'
     parser = Assets()
     parser.feed(response.get_data(as_text=True))
-    assert set(parser.urls) == {'/static/app.js', '/static/api.js', '/static/styles.css'}
+    assert set(parser.urls) == {'/static/styles.css'}
     for url in parser.urls:
         asset = client.get(url)
         assert asset.status_code == 200
@@ -49,3 +49,46 @@ def test_ui_history_survives_server_restart(tmp_path):
     saved = client.get(f"/api/shots/{shot['id']}").json['shot']
     assert saved['launch_direction_deg'] < 0
     assert len(saved['samples']['timestamps_s']) == 6
+
+
+def test_html_workflow_without_javascript(tmp_path):
+    import re
+    config = {'TESTING': True, 'DATABASE_PATH': tmp_path / 'forms.db'}
+    app = create_app(config)
+    client = app.test_client()
+    def token():
+        response = client.get('/')
+        assert "script-src 'none'" in response.headers['Content-Security-Policy']
+        assert '<script' not in response.text
+        return re.search(r'name="token" value="([^"]+)"', response.text)[1]
+    assert client.post('/actions/start', data={'token': token()}).status_code == 303
+    sid = app.extensions['shot_store'].active_session()['id']
+    data = {'token': token(), 'session_id': sid, 'scenario': 'right-launch'}
+    response = client.post('/actions/simulate', data=data)
+    assert response.status_code == 303
+    result = client.get(response.headers['Location'])
+    assert 'View input samples (6)' in result.text
+    assert 'Saved in SQLite' in result.text
+    client.post('/actions/simulate', data=data)
+    assert len(app.extensions['shot_store'].list_shots()) == 1
+    assert client.get('/results').status_code == 200
+    assert 'Shot #1' in create_app(config).test_client().get('/results').text
+    assert '#1' in client.get('/history?session_id=' + str(sid)).text
+    assert client.get('/static/app.js').status_code == 404
+    assert client.get('/static/api.js').status_code == 404
+    assert client.post('/actions/end', data={'token': token(), 'session_id': sid}).status_code == 303
+    assert app.extensions['shot_store'].active_session() is None
+
+
+def test_form_errors_and_missing_token_do_not_save(tmp_path):
+    import re
+    app = create_app({'TESTING': True, 'DATABASE_PATH': tmp_path / 'errors.db'})
+    c = app.test_client()
+    c.post('/actions/start')
+    assert app.extensions['shot_store'].active_session() is None
+    sid = app.extensions['shot_store'].start_session()['id']
+    token = re.search(r'name="token" value="([^"]+)"', c.get('/').text)[1]
+    response = c.post('/actions/simulate', data={'token':token, 'session_id':sid, 'scenario':'invalid'})
+    assert response.status_code == 400
+    assert 'role="alert"' in response.text
+    assert not app.extensions['shot_store'].list_shots()

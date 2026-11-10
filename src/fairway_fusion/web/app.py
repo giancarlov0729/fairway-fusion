@@ -1,3 +1,4 @@
+from fairway_fusion.web.page_routes import register_page_routes
 
 # Flask creates server, jsonify builds JSON responses, request handles incoming requests, render_template serves HTML
 from flask import Flask, jsonify, request, render_template
@@ -29,7 +30,7 @@ def create_app(test_config=None):
     def index():
 
         # Browser displays the integrated session, results, and history interface.
-        return render_template("index.html")
+        return app.extensions["render_page"]()
 
     @app.get("/api/health")
     def health():
@@ -95,6 +96,7 @@ def create_app(test_config=None):
         return jsonify(result)                                              # Send the calculated preview back to the browser
 
     register_session_routes(app)
+    register_page_routes(app)
     register_pico_routes(app)           # Register USB endpoints using 1 shared Pico client
 
     # Return the configured app to Flask or the test runner.
