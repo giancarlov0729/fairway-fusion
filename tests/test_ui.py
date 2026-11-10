@@ -92,3 +92,29 @@ def test_form_errors_and_missing_token_do_not_save(tmp_path):
     assert response.status_code == 400
     assert 'role="alert"' in response.text
     assert not app.extensions['shot_store'].list_shots()
+
+
+def test_product_pages_and_pico_controls(tmp_path):
+    import re
+    from fairway_fusion.hardware.pico_client import PicoError
+    class Device:
+        def connect(self): return 'PICO2W_USB_1'
+        def command(self, command):
+            if command == 'STATUS': raise PicoError('USB disconnected')
+            return 'DISARMED'
+        def close(self): pass
+    app = create_app({'TESTING':True, 'DATABASE_PATH':tmp_path/'devices.db', 'PICO_CLIENT':Device()})
+    c=app.test_client()
+    for path in ('/', '/results', '/history', '/devices', '/setup'):
+        response=c.get(path)
+        assert response.status_code == 200
+        assert '<script' not in response.text
+        assert 'SIMULATION MODE' in response.text
+    def action(name):
+        token=re.search(r'name="token" value="([^"]+)"',c.get('/devices').text)[1]
+        return c.post('/actions/'+name,data={'token':token},follow_redirects=True)
+    assert 'PICO2W_USB_1' in action('connect').text
+    assert 'USB disconnected' in action('status').text
+    assert 'DISARMED' in action('disarm').text
+    assert 'Disconnected' in action('disconnect').text
+    assert 'Coming soon' in c.get('/setup').text

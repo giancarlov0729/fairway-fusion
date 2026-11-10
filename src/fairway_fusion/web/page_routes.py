@@ -2,6 +2,7 @@ from secrets import token_urlsafe
 from threading import Lock
 from flask import redirect, render_template, request, url_for
 from fairway_fusion.services.shot_service import save_simulated_shot
+from fairway_fusion.hardware.pico_client import PicoError
 from fairway_fusion.storage import NotFoundError, SessionStateError
 
 
@@ -9,6 +10,7 @@ def register_page_routes(app):
     store = app.extensions['shot_store']
     lock = Lock()
     tokens = {}
+    device_status = {"message": "Not checked", "connected": False}
 
     def page(view='session', shot=None, error=None, status=200):
         with lock:
@@ -19,7 +21,7 @@ def register_page_routes(app):
         selected = request.args.get('session_id', type=int)
         return render_template('index.html', view=view, shot=shot, error=error,
             active=store.active_session(), sessions=store.list_sessions(),
-            shots=store.list_shots(session_id=selected), selected=selected, token=token), status
+            shots=store.list_shots(session_id=selected), selected=selected, token=token, device=device_status.copy(), latest=store.latest_shot()), status
 
     @app.get('/results')
     def results():
@@ -37,12 +39,31 @@ def register_page_routes(app):
     def history():
         return page('history')
 
+    @app.get('/devices')
+    def devices():
+        return page('devices')
+
+    @app.get('/setup')
+    def setup():
+        return page('setup')
+
     @app.post('/actions/<action>')
     def page_action(action):
         with lock:
             if tokens.pop(request.form.get('token', ''), None) is None:
                 return redirect(url_for('index'), code=303)
             try:
+                if action in ('connect', 'status', 'disarm', 'disconnect'):
+                    pico = app.extensions['pico']
+                    if action == 'connect':
+                        message = pico.connect()
+                    elif action == 'disconnect':
+                        pico.close()
+                        message = 'Disconnected'
+                    else:
+                        message = pico.command(action.upper())
+                    device_status.update(message=message, connected=action != 'disconnect')
+                    return redirect(url_for('devices'), code=303)
                 if action == 'start':
                     store.start_session()
                 elif action == 'end':
@@ -52,6 +73,9 @@ def register_page_routes(app):
                     return redirect(url_for('result_detail', shot_id=shot['id']), code=303)
                 else:
                     return redirect(url_for('index'), code=303)
+            except PicoError as error:
+                device_status.update(message=str(error), connected=False)
+                return redirect(url_for('devices'), code=303)
             except (ValueError, KeyError, NotFoundError, SessionStateError) as error:
                 message = str(error)
             else:
