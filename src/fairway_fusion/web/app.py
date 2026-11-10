@@ -12,6 +12,9 @@ from werkzeug.exceptions import BadRequest
 from fairway_fusion.services.shot_service import preview_shot
 from fairway_fusion.web.session_routes import register_session_routes
 
+# USB endpoints
+from fairway_fusion.web.pico_routes import register_pico_routes
+
 # Create Flask application instance
 def create_app(test_config=None):
 
@@ -92,6 +95,7 @@ def create_app(test_config=None):
         return jsonify(result)                                              # Send the calculated preview back to the browser
 
     register_session_routes(app)
+    register_pico_routes(app)           # Register USB endpoints using 1 shared Pico client
 
     # Return the configured app to Flask or the test runner.
     return app 
