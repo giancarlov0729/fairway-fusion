@@ -65,4 +65,58 @@ class PicoClient:    # Manage 1 connection to the Pico
             except OSError:                                 # Handle errors w/ unplugged device
                 pass                                            # Continue
 
+    def _exchange(self, command):                                               # Send message + check response
+            request_id = uuid4().hex                                                # Create unique ID as hex text
+            message = f"FF1 {request_id} {command}\n".encode("ascii")               # Build message + convert to bytes
     
+            if self._serial.write(message) != len(message):                         # Check that every byte was sent
+                raise PicoError("Incomplete USB write; command outcome is unknown.")    # Report incomplete send
+              
+            deadline = time.monotonic() + self.timeout                              # Set latest allowed response time
+            response = bytearray()                                                  # Buffer for received bytes
+    
+            while time.monotonic() < deadline:                                      # Keep reading until time runs out
+                chunk = self._serial.read(1)                                            # Read 1 byte
+    
+                if not chunk:                                                           # If no byte arrived
+                    continue                                                                # Try again 
+
+                response.extend(chunk)                                                  # Add byte to response
+    
+                if len(response) > 128:                                                 # Check size limit
+                    raise PicoError("Pico response exceeds 128 bytes.")                     # Response is oversized
+                
+                if chunk != b"\n":                                                      # Is response line unfinished?
+                    continue                                                                # If so keep collecting
+    
+                fields = response.decode("ascii").strip().split()                       # Bytes -> text + separate its fields
+    
+                if len(fields) != 4 or fields[:2] != ["FF1", request_id]:               # Check field count, version and ID
+                    raise PicoError("Invalid or mismatched Pico response.")                 # Reject invalid response
+                
+                if fields[2] == "ERR":                                                  # Error?
+                    raise PicoError(f"Pico rejected {command}: {fields[3]}")                # Report error
+                 
+                if fields[2] != "OK" or fields[3] != self.EXPECTED[command]:            # Check success flag + reply value
+                    raise PicoError("Unexpected Pico firmware response.")                   # Report no complete reply arrived
+    
+                return fields[3]                                                        # Return reply value
+            
+            raise PicoError("Pico response timed out; reconnect before retrying.")  # Report that no complete reply arrived
+    
+    
+    if __name__ == "__main__": 
+        import argparse                                                                                 # Read command line args                                                                                         
+        parser = argparse.ArgumentParser(description="Test the Fairway Fusion USB-only Pico firmware.") # Create argument reader
+        parser.add_argument("--port", required=True)                                                    # Require serial port argument
+        arguments = parser.parse_args()                                                                 # Read suplied arguments
+        pico = PicoClient(arguments.port)                                                               # Create client for selected port
+
+        try:                                                # Run communication test
+            print("HELLO:", pico.connect())                     # Connect + print firmware identity
+
+            for name in ("PING", "STATUS", "DISARM"):           # Test each remaining command
+                print(f"{name}:", pico.command(name))               # Send command + print its reply
+
+        finally:                                                # Run cleanup 
+            pico.close()                                            # Close serial connection
