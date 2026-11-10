@@ -45,3 +45,59 @@ static void handle_line(const char *line) {
     fflush(stdout);                                 // Send any buffered reply text
 }
 
+// Pico program
+int main(void) {
+    stdio_init_all();               // Start configured USB input + output
+
+    char line[128];                 // Store incoming message
+    size_t used = 0;                // Count stored chars
+    bool dropping = false;          // Track if message should be ignored
+    uint64_t last_byte = 0;         // Store when last char got here
+
+    while (true) {                                      // On loop...
+
+        if(!stdio_usb_connected()) {                        // USB is disconnected?
+            used = 0;                                           // Clear unfinished message
+            dropping = false;                                   // Reset ignore flag
+            sleep_ms(10);                                       // Wait 10 ms
+            continue;                                           // Restart 
+        }
+
+        if((used > 0 || dropping) && time_us_64() - last_byte > 1000000) {  // Clear unfinished input afer 1 sec w/o data
+            used = 0;                                                           // Clear stored chars
+            dropping = false;                                                   // Allow new message
+        }
+
+        int ch = getchar_timeout_us(1000);          // Wait up to 1 ms for a char              
+
+        if(ch == PICO_ERROR_TIMEOUT) {              // Check if nothing arrived
+            continue;
+        }
+
+        last_byte = time_us_64();                   // Save characters arrival time
+
+        if(ch == '\r') {                            // Check for carriage return
+            continue;
+        }
+
+        if(ch == '\n') {                            // Check for new line
+
+            if(!dropping && used > 0) {                 // Process non empty message that passed input checks
+                line[used] = '\0';                          // Mark end of c string
+                handle_line(line);                          // Process command and reply
+            }
+
+            used = 0;                                   // Clear message buffer position
+            dropping = false;                           // Reset for next message
+
+        } else if(ch < 32 || ch > 126 || used >= sizeof(line) - 1) {    // Invalid char or full buffer?
+            dropping = true;                                                // Ignore rest of message
+
+        } else if(!dropping) {                                          // Still accepting chars?
+            line[used++] = (char)ch;                                        // Store character and increase count
+
+        }
+
+    }
+
+}
