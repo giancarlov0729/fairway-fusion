@@ -9,6 +9,7 @@ from fairway_fusion.simulation import (
 )
 
 from fairway_fusion.analysis.velocity import estimate_velocity      # Function to calculate velocity from positions and timestamps
+from fairway_fusion.analysis.carry import carry_metrics             # Function to estimate carry (model output, not a measurement)
 from fairway_fusion.analysis.launch_angle import launch_metrics     # Function to calcualte ball speed, launch angle, and azimuth from velocity
 
 
@@ -37,6 +38,7 @@ def preview_shot(scenario="straight"):                              # Function t
             "timestamps_s": times_s.tolist(),
         },
         **metrics,                                          # Insert each calculated metric into this dictionary
+        "carry": carry_metrics(metrics),                    # Estimated carry kept in its own block, separate from measured values
     }
 
 def save_simulated_shot(store, session_id, scenario="straight"):    # Function to generate a simulated shot, calculate metrics, and save results and input samples to database
