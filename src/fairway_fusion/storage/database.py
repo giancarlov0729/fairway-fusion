@@ -44,10 +44,9 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "instance" / "fairway.db
 MPS_TO_MPH = 2.2369362921
 
 # --- Schema ------------------------------------------------------------------
-# The SQL that defines the two tables. It runs every time a ShotStore is
-# created. "IF NOT EXISTS" makes that safe: the first run creates the tables,
-# and every later run (for example after the Pi reboots) does nothing, so
-# existing data is never wiped.
+# The SQL that defines the original two tables. It is now run as migration 1
+# (see "Schema versions and migrations" below). "IF NOT EXISTS" means a
+# database that already has these tables keeps them and their data.
 SCHEMA = """
 -- One row per practice session, i.e. everything between Start and End.
 CREATE TABLE IF NOT EXISTS sessions (
@@ -111,6 +110,55 @@ CREATE TABLE IF NOT EXISTS shots (
 CREATE INDEX IF NOT EXISTS idx_shots_session ON shots(session_id, id);
 """
 
+# --- Schema versions and migrations ------------------------------------------
+# Every SQLite file has a built-in whole number called user_version, which is
+# 0 in a brand-new file. We use it to record which version of the table layout
+# the file is at.
+#
+# Each time the layout changes, a new migration function is added to the end
+# of MIGRATIONS and SCHEMA_VERSION goes up by one. On startup, ShotStore runs
+# only the migrations the file has not had yet, in order. An old database
+# (like the one on the Pi from the pre-alpha demo) is upgraded in place and
+# keeps all of its sessions and shots.
+#
+# Rules for adding a migration later:
+#   - Never edit or reorder an existing migration. Files in the field have
+#     already run it. Add a new one instead.
+#   - Only add things (tables, columns, indexes). Do not delete user data.
+
+
+def _run_script(conn, script):
+    """Run several SQL statements one at a time on an open connection.
+
+    sqlite3's executescript() would be simpler, but it commits any open
+    transaction before running, which would break the all-or-nothing
+    guarantee of _migrate. sqlite3.complete_statement() reports when the
+    text gathered so far forms one full statement (it correctly ignores
+    semicolons inside comments), so each statement runs on its own.
+    """
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ""
+
+
+def _migration_1(conn):
+    """Version 1: the original sessions and shots tables (pre-alpha layout).
+
+    Databases made before versioning existed already have these tables, so
+    IF NOT EXISTS skips them. Those files are simply stamped as version 1.
+    """
+    _run_script(conn, SCHEMA)
+
+
+# Position in this list = version number it upgrades TO. MIGRATIONS[0] takes
+# a file to version 1, MIGRATIONS[1] (added in the next step) to version 2...
+MIGRATIONS = [_migration_1]
+
+# The version this code expects. Always equal to the number of migrations.
+SCHEMA_VERSION = len(MIGRATIONS)
 
 # --- Error types -------------------------------------------------------------
 # Custom exceptions let the server tell problems apart and respond properly,
@@ -138,7 +186,14 @@ class NotFoundError(StorageError):
     Suggested HTTP response from the server: 404 Not Found.
     """
 
+class SchemaVersionError(StorageError):
+    """The database file was written by newer code than this version.
 
+    Happens if someone runs an older checkout against a database a newer
+    checkout already upgraded. Refusing is safer than guessing at a layout
+    this code does not understand. Fix: update the code (git pull).
+    """
+    
 # --- Small helper functions ----------------------------------------------------
 # Names starting with an underscore are internal: other modules should not
 # need to call them.
@@ -209,10 +264,90 @@ class ShotStore:
         # creates the file itself but will crash if the folder is missing.
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
 
-        # Create the tables if they do not exist yet. Safe on every startup.
-        # (See _connect below for what this "with" line does.)
-        with closing(self._connect()) as conn, conn:
-            conn.executescript(SCHEMA)
+                # Create the tables, or upgrade an older database to the current
+        # layout. Safe on every startup: a file already at SCHEMA_VERSION
+        # is left untouched.
+        self._migrate()
+
+    def _migrate(self):
+        """Bring the database file up to SCHEMA_VERSION.
+
+        Steps:
+          1. If an existing database is about to change, back it up first.
+          2. Take the write lock and start ONE transaction for the rest, so
+             a failure in any later step undoes everything.
+          3. Refuse a file newer than this code (SchemaVersionError).
+          4. Run each missing migration in order.
+          5. Record the new version and commit.
+        """
+        # isolation_level=None turns off sqlite3's automatic transaction
+        # handling, so this method can control BEGIN, COMMIT and ROLLBACK
+        # itself. That is needed because some layout changes (CREATE TABLE,
+        # ALTER TABLE) would otherwise not be covered by the transaction.
+        conn = sqlite3.connect(self.path, timeout=5, isolation_level=None)
+        with closing(conn):
+            # Back up BEFORE taking the write lock. SQLite's backup cannot
+            # copy a database while this same connection holds its write
+            # lock; it waits forever. Version 0 with no tables is a brand-new
+            # empty file, so there is nothing to back up. Anything else
+            # that is about to be upgraded is real data.
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            has_tables = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1"
+            ).fetchone()
+            if version < SCHEMA_VERSION and has_tables:
+                self._backup(conn, version)
+
+            # BEGIN IMMEDIATE takes the write lock right away. If two server
+            # processes start at the same moment, the second one waits here,
+            # then sees the version the first one already wrote, and does
+            # nothing. Without it, both could try to upgrade at once.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Read the version again now that we hold the lock, in case
+                # another process upgraded the file in the meantime.
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+                if version > SCHEMA_VERSION:
+                    raise SchemaVersionError(
+                        f"Database is at schema version {version}, but this code "
+                        f"only understands up to {SCHEMA_VERSION}. Update the code."
+                    )
+
+                if version < SCHEMA_VERSION:
+                    # Run every migration the file has not had yet, in order.
+                    # MIGRATIONS[version] is the one that upgrades FROM it.
+                    for migration in MIGRATIONS[version:]:
+                        migration(conn)
+
+                    # PRAGMA statements cannot use "?" placeholders, so the
+                    # number is put into the text directly. That is safe here
+                    # because SCHEMA_VERSION is a whole number set in this
+                    # file, never user input.
+                    conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
+
+                conn.execute("COMMIT")
+            except BaseException:
+                # Anything went wrong: undo every change, including the
+                # version number, then let the error continue upward.
+                conn.execute("ROLLBACK")
+                raise
+
+    def _backup(self, conn, version):
+        """Copy the database next to itself before it is upgraded.
+
+        Named like fairway.backup-v1-20261111T021500Z.db so backups sort by
+        time and show which version they hold. The name ends in .db, so the
+        "*.db" line in .gitignore keeps backups out of git.
+
+        Uses SQLite's own backup feature rather than copying the file, so the
+        copy is consistent even if the database is in use.
+        """
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        original = Path(self.path)
+        target = original.with_name(f"{original.stem}.backup-v{version}-{stamp}.db")
+        with closing(sqlite3.connect(target)) as copy:
+            conn.backup(copy)
 
     def _connect(self):
         """Open a fresh connection configured the way every method expects."""
