@@ -73,6 +73,15 @@ def _validate(speed_mps: float, angle_deg: float, a: Assumptions) -> None:
         raise ValueError(f"launch angle must be between 0 and 90 degrees exclusive, got {angle_deg}")
     if a.model not in MODELS:
         raise ValueError(f"unknown model '{a.model}', choose from {MODELS}")
+    for name in ("air_density", "ball_mass", "ball_diameter", "time_step_s",
+                 "drag_coeff", "backspin_rpm", "max_lift_coeff", "launch_height_m"):
+        value = getattr(a, name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"{name} must be a number")
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+    if not 0.0001 <= a.time_step_s <= 0.01:
+        raise ValueError("time_step_s must be between 0.0001 and 0.01 seconds")
     for name in ("air_density", "ball_mass", "ball_diameter", "time_step_s"):
         if not getattr(a, name) > 0:
             raise ValueError(f"{name} must be positive")
@@ -113,8 +122,8 @@ def _numeric(v: float, theta: float, a: Assumptions) -> tuple[float, float, floa
         a2x, a2y = accel(vx + 0.5 * dt * a1x, vy + 0.5 * dt * a1y)
         a3x, a3y = accel(vx + 0.5 * dt * a2x, vy + 0.5 * dt * a2y)
         a4x, a4y = accel(vx + dt * a3x, vy + dt * a3y)
-        nx = x + dt * (vx + 0.5 * dt * a1x)
-        ny = y + dt * (vy + 0.5 * dt * a1y)
+        nx = x + dt * (vx + dt * (a1x + a2x + a3x) / 6)
+        ny = y + dt * (vy + dt * (a1y + a2y + a3y) / 6)
         nvx = vx + dt * (a1x + 2 * a2x + 2 * a3x + a4x) / 6
         nvy = vy + dt * (a1y + 2 * a2y + 2 * a3y + a4y) / 6
         if ny <= 0 and vy < 0 or ny <= 0 < y:
@@ -153,6 +162,8 @@ def estimate_carry(
         carry, apex, t = _vacuum(v, theta, a.launch_height_m)
     else:
         carry, apex, t = _numeric(v, theta, a)
+    if not all(math.isfinite(value) for value in (carry, apex, t)):
+        raise ValueError("trajectory produced non-finite results; check assumptions")
     return CarryEstimate(carry, carry * M_TO_YD, apex, t, a)
 
 
@@ -173,7 +184,7 @@ def carry_metrics(metrics: dict, assumptions: Assumptions | None = None) -> dict
     }
     try:
         r = estimate_carry(metrics["speed_m_s"], metrics["launch_angle_deg"], a, "mps")
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, ArithmeticError, RuntimeError) as exc:
         return {**empty, "carry_error": str(exc)}
     return {**empty,
             "estimated_carry_m": r.carry_m, "estimated_carry_yd": r.carry_yd,

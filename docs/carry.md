@@ -67,7 +67,7 @@ Example response block (`straight` simulated shot, 50 m/s at 15°):
 - Show carry only when `carry.carry_error` is `null`.
 - When it is not `null` (no usable launch angle, for example), show a dash or "Not available", and do not show a zero.
 - Place it in its own labelled area on the results screen, separate from speed and launch angle, with a short note such as "Estimated, spin not measured".
-- Update the note in `app.js` and `docs/ui.md` that says carry is not calculated.
+- Update the note in `the Flask/Jinja interface` and `docs/ui.md` that says carry is not calculated.
 
 ### Database
 
@@ -100,7 +100,7 @@ All are stored in `Assumptions` and returned in `carry_assumptions`.
 
 ## Limitations
 
-- **Spin is assumed, not measured.** Spin was removed from the prototype. Real spin varies from roughly 2,500 rpm (driver) to over 8,000 rpm (wedges) and strongly changes carry. This is the largest source of error.
+- **Spin is assumed, not measured.** Spin measurement is deferred in the prototype. Real spin varies from roughly 2,500 rpm (driver) to over 8,000 rpm (wedges) and strongly changes carry. This is the largest source of error.
 - **Spin does not decay** during flight in the model, and the drag coefficient is constant. Real balls change both with speed and spin.
 - **Ideal conditions:** no wind, no altitude or temperature changes, flat ground.
 - **Carry only.** It does not predict roll or total distance, and ignores side spin and curvature, so `launch_direction_deg` does not affect the estimate.
@@ -120,3 +120,5 @@ python -m pytest tests/test_carry.py tests/test_shot_service.py -v
 ```
 
 The tests check the exact vacuum formula, symmetry, model ordering, unit conversion, numerical step-size convergence, realistic ranges, invalid inputs, and the `carry_metrics` handoff.
+
+Numerical integration uses RK4 for both position and velocity. Physical assumptions must be finite numbers; time steps are limited to 0.0001–0.01 seconds to bound processing time. Integration failures return `carry_error` through the server adapter.
