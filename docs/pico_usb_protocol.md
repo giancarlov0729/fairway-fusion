@@ -1,6 +1,6 @@
 # Pi-Pico USB foundation: FF1
 
-Status: proposed team contract, implemented by the code supplied in the November 9, 2026 chat. The corresponding code files are intentionally empty until Ethan pastes that code. No existing remote branch contained Pico firmware when checked on November 9.
+This page describes the legacy USB-only firmware. See [Pico capture firmware](pico_capture.md) for the current capture commands, wiring and timing report.
 
 ## Scope
 
