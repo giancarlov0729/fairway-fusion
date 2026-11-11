@@ -16,9 +16,14 @@ import pytest
 
 from fairway_fusion.storage import (
     NotFoundError,
+    SchemaVersionError,
     SessionStateError,
     ShotStore,
 )
+
+# The module itself, so migration tests can read SCHEMA and swap in fake
+# migrations. Normal tests only need the names imported above.
+from fairway_fusion.storage import database
 
 # A realistic simulated trajectory, shaped exactly like what the server will
 # pass in: three timestamps (1, 2, 3 ms) and the ball's x/y/z position in
@@ -341,3 +346,121 @@ def test_memory_path_refused():
     every table after the first call."""
     with pytest.raises(ValueError):
         ShotStore(":memory:")
+
+
+
+# --- Schema versions and migrations --------------------------------------------
+
+
+def _version(path):
+    """Read a database file's schema version straight from SQLite."""
+    with sqlite3.connect(path) as conn:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _backups(path):
+    """List the backup files ShotStore made next to a database."""
+    return sorted(path.parent.glob(f"{path.stem}.backup-*.db"))
+
+
+def _make_pre_versioning_db(path):
+    """Build a database exactly like the one on the Pi from the pre-alpha demo.
+
+    Original two tables, one session, one shot, and user_version left at 0,
+    because versioning did not exist yet when it was created.
+    """
+    with sqlite3.connect(path) as conn:
+        conn.executescript(database.SCHEMA)
+        conn.execute(
+            "INSERT INTO sessions (started_at) VALUES ('2026-11-05T15:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO shots (session_id, created_at, status, speed_m_s, "
+            "launch_angle_deg, source) VALUES "
+            "(1, '2026-11-05T15:01:00+00:00', 'accepted', 55.0, 14.0, 'simulation')"
+        )
+
+
+def test_new_database_gets_current_version(tmp_path):
+    """A brand-new file is created at the current version, with no backup,
+    because there is no existing data to protect."""
+    path = tmp_path / "fairway.db"
+    ShotStore(path)
+    assert _version(path) == database.SCHEMA_VERSION
+    assert _backups(path) == []
+
+
+def test_old_database_is_upgraded_and_keeps_data(tmp_path):
+    """The Pi situation: an old database is upgraded in place, its history is
+    untouched, and a backup holding that history is made first."""
+    path = tmp_path / "fairway.db"
+    _make_pre_versioning_db(path)
+
+    store = ShotStore(path)
+
+    # Upgraded to the current version.
+    assert _version(path) == database.SCHEMA_VERSION
+
+    # The demo shot is still there with its original values.
+    shots = store.list_shots()
+    assert [(s["speed_m_s"], s["launch_angle_deg"]) for s in shots] == [(55.0, 14.0)]
+
+    # Exactly one backup, labelled with the version it came from (0), and it
+    # really contains the old shot.
+    backups = _backups(path)
+    assert len(backups) == 1
+    assert "backup-v0-" in backups[0].name
+    with sqlite3.connect(backups[0]) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM shots").fetchone()[0] == 1
+
+
+def test_reopening_current_database_makes_no_backup(tmp_path):
+    """Restarting the server on an up-to-date file changes nothing, so the
+    Pi does not fill up with a new backup on every reboot."""
+    path = tmp_path / "fairway.db"
+    _make_pre_versioning_db(path)
+    ShotStore(path)  # upgrade: one backup
+    ShotStore(path)  # already current: no new backup
+    ShotStore(path)
+    assert len(_backups(path)) == 1
+
+
+def test_database_from_newer_code_is_refused(tmp_path):
+    """Older code must not touch a file newer code already upgraded. The
+    file's version is left exactly as it was."""
+    path = tmp_path / "fairway.db"
+    ShotStore(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA user_version = 99")
+
+    with pytest.raises(SchemaVersionError):
+        ShotStore(path)
+    assert _version(path) == 99
+
+
+def test_failed_upgrade_changes_nothing(tmp_path, monkeypatch):
+    """If any migration fails partway, every change is undone: the version
+    is not bumped and no half-built tables are left behind."""
+
+    def broken_migration(conn):
+        # Make a real change, then crash, like a bug halfway through.
+        conn.execute("CREATE TABLE half_done (x)")
+        raise RuntimeError("simulated failure during upgrade")
+
+    # monkeypatch swaps these values for this test only, and puts the real
+    # ones back automatically when the test ends.
+    monkeypatch.setattr(database, "MIGRATIONS", [*database.MIGRATIONS, broken_migration])
+    monkeypatch.setattr(database, "SCHEMA_VERSION", len(database.MIGRATIONS))
+
+    path = tmp_path / "fairway.db"
+    with pytest.raises(RuntimeError):
+        ShotStore(path)
+
+    # Still version 0, and neither migration 1's tables nor the broken
+    # migration's table survived.
+    assert _version(path) == 0
+    with sqlite3.connect(path) as conn:
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    assert tables == []
