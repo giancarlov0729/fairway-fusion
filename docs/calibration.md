@@ -34,13 +34,7 @@ The reconstructed trajectory will be expressed in a consistent physical coordina
 
 ## Coordinate System
 
-The project will establish a common coordinate system defining:
-
-- Forward ball flight
-- Horizontal direction
-- Vertical direction
-
-The exact axis convention will be finalized before implementing trajectory calculations.
+The golf coordinate frame uses meters. +X points downrange, +Y left, and +Z up.
 
 ## Validation
 
@@ -50,4 +44,12 @@ Calibration parameters must be updated whenever camera positions, lenses, focus,
 
 ## Status
 
-Calibration implementation pending.
+The vision pipeline accepts an OpenCV pinhole model for each camera.
+Supply its intrinsic matrix, distortion coefficients, world-to-camera
+rotation and translation, and calibrated image size. The pipeline undistorts
+detected centers and triangulates the matched observations.
+
+The laptop fixture supplies synthetic calibration. Once the physical cameras
+are mounted and focused, use paired target images to fit the lens and stereo
+parameters, align them to the golf coordinate frame, and verify independent
+distances and heights. Fitting parameters from target images is a follow-up.

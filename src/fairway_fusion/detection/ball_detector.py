@@ -73,3 +73,25 @@ def detect_ball(frame, min_radius=5, max_radius=200):
             }
 
     return best_ball
+
+def detect_ball_centers(image, *, threshold=100, min_radius=5, max_radius=200):
+    """Find isolated bright ball silhouettes in a uint8 monochrome image."""
+    if image.ndim != 2 or image.dtype != np.uint8:
+        raise ValueError("Expected an 8-bit monochrome image")
+
+    _, mask = cv2.threshold(image, threshold, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    height, width = image.shape
+    centers = []
+    for contour in contours:
+        (x, y), radius = cv2.minEnclosingCircle(contour)
+        if not min_radius <= radius <= max_radius:
+            continue
+        if min(x - radius, y - radius, width - 1 - x - radius, height - 1 - y - radius) <= 0:
+            continue
+
+        area = cv2.contourArea(contour)
+        # Reject merged or irregular silhouettes instead of splitting them.
+        if area >= 0.82 * np.pi * radius**2:
+            centers.append((x, y))
+    return centers
