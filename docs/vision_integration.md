@@ -100,3 +100,48 @@ Cleanup may retain the small manifest after deleting PNGs; the database's
 
 These functions are service-level building blocks only. Flask actions, UI image
 display, shot saving, and automatic processing are reserved for chunks 3–5.
+
+## Chunk 3: processing saved captures
+
+`services/capture_processing_service.py` exposes
+`process_saved_capture(store, capture_id)`, returning the saved shot dictionary.
+It currently accepts only `simulation` captures and uses the chunk-2 loader and
+chunk-1 adapter. No USB commands, new images, automatic cleanup or UI actions run.
+
+`ShotStore.claim_capture_processing` takes an SQLite write lock, checks the source
+and original session, and commits status `processing` plus processing version
+`stereo-vision-v1`. Another request sees the busy state and cannot process it
+again. Increment this version when intentionally changing the processing behavior.
+The original session must still be active for a new processing attempt. Session
+ending and cleanup are blocked while processing is underway.
+
+An accepted vision result saves speed, angles, reconstructed positions/timestamps,
+carry assumptions/estimate, source, session ID and capture ID. A normal vision
+rejection saves a rejected shot and reason with no invented launch measurements.
+In both cases, detections, matched centres, reprojection errors and vision outcome
+are recorded in the capture's `detections` JSON field. The image files and original
+calibration/timing links are preserved. Capture `completed` means the processing
+operation finished; inspect the linked shot's status for accepted versus rejected.
+
+`save_shot(finalize_capture=True, detections=..., expected_capture=...)` validates
+the metadata snapshot and writes the shot and capture completion in ONE database
+transaction. If completion fails, the shot insert rolls back too. Changed timing,
+calibration, source, session or image paths cannot silently receive stale results.
+The existing unique capture index remains a second guard against duplicate shots.
+
+An unexpected processing/asset/storage exception marks the attempt `failed`, stores
+the exception type and message, and raises `CaptureProcessingError` with capture ID
+and chained cause. It does not fabricate a rejected shot. Available diagnostics
+are retained if analysis finished before storage failed. If storage itself becomes
+unavailable, updating the failure record may also fail; an unfinished processing
+record is recovered as interrupted on normal server startup.
+
+An explicit retry of failed/interrupted work can claim it again after the input
+problem is fixed. Busy, preparing, armed, capturing, cancelled and timed-out
+captures cannot be claimed. After a shot has already been saved, repeated requests
+return that same shot without reloading images or rerunning vision, including
+after the session ends. Carry-model failure leaves a valid launch accepted with
+an empty carry estimate and recorded carry error.
+
+No schema migration is needed: this uses the existing capture/shot columns.
+The processing service is not wired into Flask or the UI until chunks 4 and 5.
