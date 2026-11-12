@@ -19,7 +19,17 @@ def register_page_routes(app):
             if len(tokens) > 512:
                 del tokens[next(iter(tokens))]
         selected = request.args.get('session_id', type=int)
+        capture = None
+        if view == 'capture':
+            key = request.args.get('capture_id') or app.extensions['mock_capture_service'].active_capture_id
+            if key:
+                try:
+                    capture = store.get_capture(key)
+                except NotFoundError:
+                    error, status = 'Capture not found.', 404
         return render_template('index.html', view=view, shot=shot, error=error,
+            capture=capture, captures=store.list_captures(limit=12),
+            mock_active=app.extensions['mock_capture_service'].active_capture_id,
             active=store.active_session(), sessions=store.list_sessions(),
             shots=store.list_shots(session_id=selected), selected=selected, token=token, device=device_status.copy(), latest=store.latest_shot()), status
 
@@ -47,12 +57,35 @@ def register_page_routes(app):
     def setup():
         return page('setup')
 
+    @app.get('/capture')
+    def capture_page():
+        return page('capture')
+
     @app.post('/actions/<action>')
     def page_action(action):
         with lock:
             if tokens.pop(request.form.get('token', ''), None) is None:
                 return redirect(url_for('index'), code=303)
             try:
+                if action.startswith('capture-'):
+                    service = app.extensions['mock_capture_service']
+                    if action == 'capture-arm':
+                        record = service.arm()
+                    else:
+                        key = request.form.get('capture_id', '')
+                        record = store.get_capture(key)
+                        if record['source'] != 'simulation':
+                            raise ValueError('These controls operate on mock captures only.')
+                        if action == 'capture-impact':
+                            service.pico.simulate_impact(key)
+                            record = service.poll(key)
+                        elif action == 'capture-refresh':
+                            record = service.poll(key)
+                        elif action == 'capture-cancel':
+                            record = service.cancel(key)
+                        else:
+                            raise ValueError('Unknown capture action.')
+                    return redirect(url_for('capture_page', capture_id=record['capture_id']), code=303)
                 if action in ('connect', 'status', 'disarm', 'disconnect'):
                     pico = app.extensions['pico']
                     if action == 'connect':
@@ -74,13 +107,16 @@ def register_page_routes(app):
                 else:
                     return redirect(url_for('index'), code=303)
             except PicoError as error:
-                device_status.update(message=str(error), connected=False)
-                return redirect(url_for('devices'), code=303)
+                if action.startswith('capture-'):
+                    message = str(error)
+                else:
+                    device_status.update(message=str(error), connected=False)
+                    return redirect(url_for('devices'), code=303)
             except (ValueError, KeyError, NotFoundError, SessionStateError) as error:
                 message = str(error)
             else:
                 return redirect(url_for('index'), code=303)
-        return page(error=message, status=400)
+        return page(view='capture' if action.startswith('capture-') else 'session', error=message, status=400)
 
     @app.after_request
     def no_scripts(response):

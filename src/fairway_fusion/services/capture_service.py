@@ -40,9 +40,10 @@ class MemoryCaptureStore:
 
 
 class CaptureService:
-    def __init__(self, pico, store: CaptureStore):
+    def __init__(self, pico, store: CaptureStore, *, source="live"):
         self.pico = pico
         self.store = store
+        self.source = source
         self._active = None
         self._lock = Lock()
 
@@ -64,6 +65,7 @@ class CaptureService:
             capture_id = uuid4().hex
             self.store.create({
                 "capture_id": capture_id, "status": "preparing", "error": None,
+                "source": self.source,
                 "timing": dict(zip(("camera_trigger_us", "flash_width_us",
                                     "flash_interval_us", "first_flash_delay_us"), values)),
                 "timing_source": "commanded", "pico_report": None,

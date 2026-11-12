@@ -44,3 +44,14 @@ Before live integration, camera readiness must precede ARM and persistent storag
 must replace memory. Application lifecycle states will add processing/interrupted.
 
 Run `python -m pytest tests/test_capture_service.py -q`.
+
+## Capture control page
+
+`/capture` provides server-rendered mock Arm, Refresh status, Cancel/disarm,
+and Simulate impact forms, using the existing single-use form tokens.
+The separate mock controller never accesses USB or GPIO. Its coordinator saves
+records with source `simulation`; completed means mock timing finished, with no
+images or measured shot generated. Camera preview panels are illustrations.
+The page shows persistent capture IDs, states, errors, timing settings and a
+recent-attempt log. Physical arming is disabled in the UI until acquisition and
+lighting are ready. Existing JSON capture endpoints still control the real Pico.
