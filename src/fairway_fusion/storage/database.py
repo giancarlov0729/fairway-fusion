@@ -23,6 +23,7 @@ Units (kept in physics-standard units; convert only for display):
                      e.g. "2026-11-04T14:02:11.204+00:00"
 """
 
+
 # --- Imports ---------------------------------------------------------------
 # All standard library. Nothing here needs pip.
 import json  # converts the raw samples dict to and from text for storage
@@ -35,6 +36,7 @@ from contextlib import closing  # guarantees a connection is closed after use
 from datetime import datetime, timezone  # timestamps for sessions and shots
 from pathlib import Path  # builds the data/ folder path in a cross-platform way
 
+
 # --- Constants -------------------------------------------------------------
 
 # Keep the default shared with Flask and preserve existing server history.
@@ -44,6 +46,7 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "instance" / "fairway.db
 # Exact conversion factor: 1 m/s = 2.2369362921 mph. Used only when shots are
 # read back, so the UI can show mph without the database ever storing it.
 MPS_TO_MPH = 2.2369362921
+
 
 # --- Schema ------------------------------------------------------------------
 # The SQL that defines the original two tables. It is now run as migration 1
@@ -111,6 +114,7 @@ CREATE TABLE IF NOT EXISTS shots (
 -- found without scanning every shot. Negligible at demo scale, cheap to keep.
 CREATE INDEX IF NOT EXISTS idx_shots_session ON shots(session_id, id);
 """
+
 
 # --- Schema versions and migrations ------------------------------------------
 # Every SQLite file has a built-in whole number called user_version, which is
@@ -349,6 +353,7 @@ MIGRATIONS = [_migration_1, _migration_2, _migration_3, _migration_4]
 # The version this code expects. Always equal to the number of migrations.
 SCHEMA_VERSION = len(MIGRATIONS)
 
+
 # --- Error types -------------------------------------------------------------
 # Custom exceptions let the server tell problems apart and respond properly,
 # e.g. "you need to start a session first" versus "that shot does not exist".
@@ -375,6 +380,7 @@ class NotFoundError(StorageError):
     Suggested HTTP response from the server: 404 Not Found.
     """
 
+
 class CaptureExistsError(StorageError):
     """A capture with this ID has already been saved.
 
@@ -382,7 +388,8 @@ class CaptureExistsError(StorageError):
     or a retried request. The original record is left untouched.
     Suggested HTTP response from the server: 409 Conflict.
     """
-    
+
+
 class ShotExistsError(StorageError):
     """This capture already has a saved shot.
 
@@ -391,6 +398,7 @@ class ShotExistsError(StorageError):
     Suggested HTTP response from the server: 409 Conflict.
     """
 
+
 class SchemaVersionError(StorageError):
     """The database file was written by newer code than this version.
 
@@ -398,7 +406,8 @@ class SchemaVersionError(StorageError):
     checkout already upgraded. Refusing is safer than guessing at a layout
     this code does not understand. Fix: update the code (git pull).
     """
-    
+
+
 # --- Small helper functions ----------------------------------------------------
 # Names starting with an underscore are internal: other modules should not
 # need to call them.
@@ -434,8 +443,6 @@ def _finite_or_none(name, value):
     if not math.isfinite(number):
         raise ValueError(f"{name} must be finite")
     return number
-
-
 
 
 # --- Calibration checks ------------------------------------------------------------
@@ -561,8 +568,6 @@ def _camera_centre(camera):
     return [-sum(R[k][i] * t[k] for k in range(3)) for i in range(3)]
 
 
-
-
 # --- Capture checks ----------------------------------------------------------------
 # A capture record arrives as a dict, the same shape Ethan's CaptureService
 # already builds. Each key it may contain is listed in _CAPTURE_FIELDS with the
@@ -682,7 +687,6 @@ def _capture_columns(fields):
     return columns
 
 
-
 # --- Carry checks ------------------------------------------------------------------
 # Steffano's carry_metrics() returns exactly these keys. Anything else is
 # refused, so a renamed or misspelled key fails loudly instead of being lost.
@@ -741,7 +745,9 @@ def _carry_columns(carry):
         "carry_error": error,
     }
 
+
 # --- The store -----------------------------------------------------------------
+
 
 class ShotStore:
     """Everything the server needs for sessions and shots.
@@ -773,7 +779,7 @@ class ShotStore:
         # creates the file itself but will crash if the folder is missing.
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
 
-                # Create the tables, or upgrade an older database to the current
+        # Create the tables, or upgrade an older database to the current
         # layout. Safe on every startup: a file already at SCHEMA_VERSION
         # is left untouched.
         self._migrate()
@@ -1170,8 +1176,6 @@ class ShotStore:
             if conn.execute("DELETE FROM shots WHERE id = ?", (shot_id,)).rowcount == 0:
                 raise NotFoundError(f"Shot {shot_id} not found")
 
-
-    
     # Calibrations -------------------------------------------------------------
 
     def save_calibration(
@@ -1253,8 +1257,7 @@ class ShotStore:
         with closing(self._connect()) as conn:
             row = conn.execute(query, params).fetchone()
             return None if row is None else _calibration_dict(row)
-        
-    
+
     # Captures -----------------------------------------------------------------
 
     @property
@@ -1366,7 +1369,6 @@ class ShotStore:
             # COALESCE keeps an existing error message if there was one.
             return cursor.rowcount
 
-    
     def list_captures(self, session_id=None, limit=50, offset=0):
         """Return captures newest first, optionally only one session's.
 
@@ -1547,8 +1549,7 @@ class ShotStore:
         if row is None:
             raise NotFoundError(f"Shot {shot_id} not found")
         return _shot_dict(row, include_samples)
-    
-    
+
     @staticmethod
     def _calibration(conn, calibration_id):
         """Return one calibration as a dict. Raises NotFoundError if missing."""
@@ -1559,7 +1560,6 @@ class ShotStore:
             raise NotFoundError(f"Calibration {calibration_id} not found")
         return _calibration_dict(row)
 
-    
     @staticmethod
     def _capture(conn, capture_id):
         """Return one capture as a dict. Raises NotFoundError if missing."""
@@ -1611,6 +1611,7 @@ class CaptureRecords:
 
     def update(self, capture_id, /, **changes):
         return self._store.update_capture(capture_id, **changes)
+
 
 # --- Output formatting -------------------------------------------------------
 # Database rows are converted to plain dicts so the server can return them as
@@ -1665,7 +1666,7 @@ def _shot_dict(row, include_samples):
             None if row["samples_json"] is None else json.loads(row["samples_json"])
         )
     return shot
-  
+
 
 def _calibration_dict(row):
     """Convert a calibration row into the dict the server returns.
@@ -1684,7 +1685,7 @@ def _calibration_dict(row):
         "reprojection_error_px": row["reprojection_error_px"],  # None if synthetic
         "notes": row["notes"],
     }
-    
+
 
 def _capture_dict(row):
     """Convert a capture row into the dict the server returns.
