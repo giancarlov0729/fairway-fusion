@@ -15,6 +15,7 @@ from fairway_fusion.web.session_routes import register_session_routes
 
 # USB endpoints
 from fairway_fusion.web.pico_routes import register_pico_routes
+from fairway_fusion.services.capture_service import CaptureService
 
 # Create Flask application instance
 def create_app(test_config=None):
@@ -98,6 +99,11 @@ def create_app(test_config=None):
     register_session_routes(app)
     register_page_routes(app)
     register_pico_routes(app)           # Register USB endpoints using 1 shared Pico client
+    store = app.extensions["shot_store"]
+    store.mark_interrupted_captures()
+    app.extensions["capture_service"] = CaptureService(
+        app.extensions["pico"], store.captures
+    )
 
     # Return the configured app to Flask or the test runner.
     return app 

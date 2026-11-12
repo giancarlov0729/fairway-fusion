@@ -11,6 +11,14 @@ ARM are sent only after that call succeeds.
 MemoryCaptureStore is temporary, loses records on restart, and returns copies.
 The coordinator tests run against both memory and SQLite storage.
 
+Flask initializes the coordinator as `app.extensions["capture_service"]`, using
+the existing `app.extensions["pico"]` client and `shot_store.captures` adapter.
+Application startup marks unfinished database captures as interrupted before
+creating the coordinator. Startup does not connect to or send commands to the
+Pico; an interrupted database record does not confirm the hardware is disarmed.
+Run one server process without automatic reloading. Creating another app against
+the same database while a capture is active would mark that capture interrupted.
+
 The service reserves one attempt and records preparing before CONFIG and ARM.
 Polling follows Pico states. Here completed means the Pico waveform completed,
 not that camera images were acquired, processed, or saved as a shot.
