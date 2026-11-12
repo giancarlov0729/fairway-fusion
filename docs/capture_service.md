@@ -48,8 +48,8 @@ an existing USB connection running capture firmware; it does not auto-connect.
 There is no background worker, camera preparation, image storage,
 or LED current configuration in this chunk. Use fake hardware for this stage.
 Default timings are example commands, not measured or approved lighting settings.
-Before live integration, camera readiness must precede ARM and persistent storage
-must replace memory. Application lifecycle states will add processing/interrupted.
+Before live camera integration, camera readiness must precede ARM. SQLite storage
+and startup interruption recovery are connected; image processing remains pending.
 
 Run `python -m pytest tests/test_capture_service.py -q`.
 

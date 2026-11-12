@@ -91,8 +91,9 @@ class CaptureService:
                 if (report.get("capture_id") != capture_id or state not in
                         {"configured", "armed", "capturing", "completed", "cancelled", "timed_out", "failed"}):
                     raise PicoError("Invalid capture report.")
+                error = report.get("error_code")
                 self.store.update(capture_id, status="preparing" if state == "configured" else state,
-                                  pico_report=report, error=report.get("error_code"))
+                                  pico_report=report, error=None if error == "none" else error)
                 if state in {"completed", "cancelled", "timed_out", "failed"}:
                     self._active = None
             except PicoError as error:

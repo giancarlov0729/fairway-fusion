@@ -98,3 +98,12 @@ def test_mock_forms_require_token_and_reject_live_capture(setup):
     assert response.status_code == 400
     assert 'mock captures only' in response.text
     assert app.extensions['shot_store'].get_capture(key)['status'] == 'armed'
+
+
+def test_live_record_is_not_labelled_as_mock_completion(setup):
+    app, client, _ = setup
+    key = 'b' * 32
+    app.extensions['shot_store'].create_capture({'capture_id': key, 'status': 'completed'})
+    page = client.get('/capture?capture_id=' + key)
+    assert 'Physical controller timing completed.' in page.text
+    assert 'Mock timing completed.' not in page.text
