@@ -48,3 +48,55 @@ Returned results use JSON-compatible Python types. Inputs are not modified.
 Camera validation checks shapes, finite values, positive focal lengths, normalized
 intrinsics, proper rotation matrices, and image sizes. It cannot establish real
 calibration accuracy. Synthetic tests do not establish physical measurement accuracy.
+
+## Chunk 2: saved synthetic inputs
+
+`create_synthetic_capture(store, session_id, case="clean", flash_interval_us=2000)`
+in `services/synthetic_capture_service.py` requires a matching active practice
+session. Available cases are Giancarlo's existing clean, leftward, shallow, blur,
+uneven-light and clutter fixtures. Flash interval is explicitly stored in integer
+microseconds and defaults to the fixture demo's 2000 us, not the Pico's 1000 us.
+Changing the interval reinterprets the same two positions at a different speed;
+it does not change the generator's positions or simulate physical output timing.
+
+The service creates a preparing capture with source `simulation`, saves a new
+synthetic calibration version, and writes these files relative to the database's
+folder (the existing default is `src/instance/`, not Flask's separate instance path):
+
+```
+captures/<capture_id>/camera_a.png
+captures/<capture_id>/camera_b.png
+captures/<capture_id>/manifest.json
+```
+
+The PNGs are lossless 640x480 uint8 monochrome images. SQLite stores the image
+paths, session ID, calibration ID and timing; no image blobs, expected positions,
+launch results, or carry estimates are saved in this chunk. The manifest repeats
+the identity/calibration/timing linkage and records each PNG's SHA-256 digest.
+Camera ordering is always A then B. Digests detect accidental changes/swaps;
+they are not digital signatures or proof of physical provenance.
+
+After a successful read-back check the capture becomes `completed`, meaning
+synthetic input generation is complete. No Pico sequence ran and no accepted shot
+exists yet. Chunk 3 will transition saved inputs through processing and save the
+accepted/rejected outcome. The current schema has no separate images-ready state.
+File-writing failures mark the attempt `failed`, retain its error and capture ID,
+and raise `CaptureAssetError`. Partial files remain as debugging evidence. Files
+and SQLite are not one atomic transaction: interruption can leave partial files;
+normal Flask startup marks an unfinished preparing record interrupted.
+
+`load_synthetic_capture(store, capture_id)` returns `SavedStereoInputs` containing
+the image arrays, reconstructed `CameraCalibration` objects, capture/session/
+calibration IDs, source, flash interval in seconds, and timing source. It does not
+regenerate fixtures or run vision. Call the chunk-1 adapter with its images,
+cameras, interval, source and timing source to analyze the saved pair.
+
+The loader verifies the manifest/database linkage, fixed per-capture paths,
+synthetic provenance, file digests, PNG format, dtype and calibrated dimensions.
+Missing files, cleanup-deleted images, symlink redirects and mismatched metadata
+fail explicitly. Copy the database and its `captures` folder together for replay.
+Cleanup may retain the small manifest after deleting PNGs; the database's
+`images_deleted_at` field prevents those inputs from being loaded as available.
+
+These functions are service-level building blocks only. Flask actions, UI image
+display, shot saving, and automatic processing are reserved for chunks 3–5.
