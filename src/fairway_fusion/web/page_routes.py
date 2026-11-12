@@ -5,6 +5,9 @@ from fairway_fusion.services.shot_service import save_simulated_shot
 from fairway_fusion.hardware.pico_client import PicoError
 from fairway_fusion.storage import NotFoundError, SessionStateError
 from fairway_fusion.web.capture_sessions import arm_session_capture, end_capture_session
+from fairway_fusion.web.capture_sessions import require_capture_session
+from fairway_fusion.services.synthetic_capture_service import CaptureAssetError, create_synthetic_capture, load_synthetic_capture
+from fairway_fusion.services.capture_processing_service import CaptureProcessingError, process_saved_capture
 
 
 def register_page_routes(app):
@@ -13,7 +16,7 @@ def register_page_routes(app):
     tokens = {}
     device_status = {"message": "Not checked", "connected": False}
 
-    def page(view='session', shot=None, error=None, status=200):
+    def page(view='session', shot=None, error=None, status=200, capture_id=None):
         with lock:
             token = token_urlsafe(32)
             tokens[token] = True
@@ -21,14 +24,31 @@ def register_page_routes(app):
                 del tokens[next(iter(tokens))]
         selected = request.args.get('session_id', type=int)
         capture = None
-        if view == 'capture':
-            key = request.args.get('capture_id') or app.extensions['mock_capture_service'].active_capture_id
+        vision_shot, assets_error, vision_inputs = None, None, None
+        if view in ('capture', 'vision'):
+            key = capture_id or request.args.get('capture_id')
+            if view == 'capture':
+                key = key or app.extensions['mock_capture_service'].active_capture_id
             if key:
                 try:
                     capture = store.get_capture(key)
                 except NotFoundError:
                     error, status = 'Capture not found.', 404
+        if view == 'vision' and capture:
+            if capture['source'] != 'simulation':
+                capture, error, status = None, 'The vision demo only accepts synthetic captures.', 409
+            else:
+                vision_shot = store.get_capture_shot(capture['capture_id'])
+                try:
+                    vision_inputs = load_synthetic_capture(store, capture['capture_id'])
+                except CaptureAssetError as problem:
+                    assets_error = str(problem)
+        vision_captures = [record for record in store.list_captures(limit=200)
+                           if record['source'] == 'simulation' and isinstance(record['timing'], dict)
+                           and 'fixture_case' in record['timing']][:12] if view == 'vision' else []
         return render_template('index.html', view=view, shot=shot, error=error,
+            vision_shot=vision_shot, vision_inputs=vision_inputs, assets_error=assets_error,
+            vision_captures=vision_captures,
             capture=capture, captures=store.list_captures(limit=12),
             mock_active=app.extensions['mock_capture_service'].active_capture_id,
             active=store.active_session(), sessions=store.list_sessions(),
@@ -62,12 +82,27 @@ def register_page_routes(app):
     def capture_page():
         return page('capture')
 
+    @app.get('/vision')
+    def vision_page():
+        return page('vision')
+
     @app.post('/actions/<action>')
     def page_action(action):
+        capture_key = request.form.get('capture_id')
+        error_status = 400
         with lock:
             if tokens.pop(request.form.get('token', ''), None) is None:
                 return redirect(url_for('index'), code=303)
             try:
+                if action == 'vision-create':
+                    raw_session = request.form.get('session_id')
+                    with app.extensions['session_lock']:
+                        sid = require_capture_session(app, int(raw_session) if raw_session else None)
+                        record = create_synthetic_capture(store, sid, case=request.form.get('case', 'clean'))
+                    return redirect(url_for('vision_page', capture_id=record['capture_id']), code=303)
+                if action == 'vision-process':
+                    process_saved_capture(store, capture_key or '')
+                    return redirect(url_for('vision_page', capture_id=capture_key), code=303)
                 if action.startswith('capture-'):
                     service = app.extensions['mock_capture_service']
                     if action == 'capture-arm':
@@ -108,6 +143,12 @@ def register_page_routes(app):
                     return redirect(url_for('result_detail', shot_id=shot['id']), code=303)
                 else:
                     return redirect(url_for('index'), code=303)
+            except (CaptureAssetError, CaptureProcessingError) as error:
+                capture_key = error.capture_id
+                message = str(error)
+                error_status = 422 if isinstance(error, CaptureProcessingError) and isinstance(error.__cause__, CaptureAssetError) else 500
+                if error_status == 500:
+                    app.logger.exception('Vision form action failed for capture %s', capture_key)
             except PicoError as error:
                 if action.startswith('capture-'):
                     message = str(error)
@@ -118,7 +159,8 @@ def register_page_routes(app):
                 message = str(error)
             else:
                 return redirect(url_for('index'), code=303)
-        return page(view='capture' if action.startswith('capture-') else 'session', error=message, status=400)
+        view = 'vision' if action.startswith('vision-') else 'capture' if action.startswith('capture-') else 'session'
+        return page(view=view, error=message, status=error_status, capture_id=capture_key)
 
     @app.after_request
     def no_scripts(response):

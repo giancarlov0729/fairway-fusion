@@ -1013,6 +1013,9 @@ class ShotStore:
         session_id=None,
         carry=None,
         capture_id=None,
+        finalize_capture=False,
+        detections=None,
+        expected_capture=None,
     ):
         """Store one shot in the active session (or ``session_id``).
 
@@ -1034,6 +1037,10 @@ class ShotStore:
         ``samples`` is optional raw input, e.g. {"timestamps_s": [...],
         "positions_m": [[x, y, z], ...]}, kept for replay and debugging.
         ``carry`` is the dict Steffano's carry_metrics() returns, saved as-is.
+
+        Processing workers can use finalize_capture=True with detections and
+        expected_capture (the original input metadata). The shot insert and
+        capture completion then commit together, only if inputs still match.
 
         Returns the saved shot as a dict, including its samples.
         Raises ValueError for bad values, SessionStateError if no session is
@@ -1080,11 +1087,32 @@ class ShotStore:
         carry_columns = _carry_columns(carry)
         if capture_id is not None:
             _check_capture_id(capture_id)
+        if type(finalize_capture) is not bool:
+            raise ValueError("finalize_capture must be True or False")
+        if finalize_capture and capture_id is None:
+            raise ValueError("Finalizing processing requires a capture_id")
+        if detections is not None and not finalize_capture:
+            raise ValueError("detections requires finalize_capture=True")
+        input_keys = {"session_id", "source", "calibration_id", "timing", "timing_source",
+                      "image_a_path", "image_b_path", "processing_version"}
+        if finalize_capture and (not isinstance(expected_capture, dict)
+                                 or not input_keys.issubset(expected_capture)):
+            raise ValueError("Finalizing processing requires the original capture input metadata")
+        completion = _capture_columns({"status": "completed", "error": None,
+                                       "detections": detections}) if finalize_capture else None
 
         # Step 2: write to the database inside one transaction.
         with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
             if capture_id is not None:
                 capture = self._capture(conn, capture_id)
+                if finalize_capture and (
+                    capture["status"] != "processing" or capture["source"] != source
+                    or capture["images_deleted_at"] is not None
+                ):
+                    raise SessionStateError("Capture is not available for processing completion")
+                if finalize_capture and any(capture[key] != expected_capture[key] for key in input_keys):
+                    raise SessionStateError("Capture inputs changed while processing; result was not saved")
                 capture_session_id = capture["session_id"]
                 if capture_session_id is not None:
                     if session_id is not None and session_id != capture_session_id:
@@ -1137,9 +1165,21 @@ class ShotStore:
                 f"VALUES ({', '.join('?' for _ in columns)})",
                 list(columns.values()),
             )
+            if completion is not None:
+                completion["updated_at"] = _now()
+                assignments = ", ".join(f"{name} = ?" for name in completion)
+                conn.execute(f"UPDATE captures SET {assignments} WHERE capture_id = ?",
+                             [*completion.values(), capture_id])
             # Read the saved row back so the server can show it immediately
             # on the results screen, with the id and timestamp the database set.
             return self._shot(conn, cursor.lastrowid, include_samples=True)
+
+    def get_capture_shot(self, capture_id):
+        """Return a capture's saved shot, or None while no result exists."""
+        with closing(self._connect()) as conn:
+            self._capture(conn, capture_id)
+            row = conn.execute("SELECT * FROM shots WHERE capture_id = ?", (capture_id,)).fetchone()
+            return None if row is None else _shot_dict(row, include_samples=True)
 
     def get_shot(self, shot_id, include_samples=True):
         """Return one shot by id. Raises NotFoundError if it does not exist.
@@ -1277,6 +1317,37 @@ class ShotStore:
             return None if row is None else _calibration_dict(row)
 
     # Captures -----------------------------------------------------------------
+
+    def claim_capture_processing(self, capture_id, *, source, processing_version):
+        """Claim work atomically; return an existing shot on a repeated request.
+
+        None means the caller owns processing. A busy or ineligible capture
+        raises SessionStateError. Startup recovery can mark abandoned work
+        interrupted before an explicit retry.
+        """
+        _check_capture_id(capture_id)
+        if source not in ("live", "simulation", "replay"):
+            raise ValueError("Invalid processing source")
+        if not isinstance(processing_version, str) or not processing_version.strip():
+            raise ValueError("processing_version is required")
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            capture = self._capture(conn, capture_id)
+            if capture["source"] != source:
+                raise SessionStateError("Capture source does not match the requested processing source")
+            existing = conn.execute("SELECT * FROM shots WHERE capture_id = ?", (capture_id,)).fetchone()
+            if existing is not None:
+                return _shot_dict(existing, include_samples=True)
+            if capture["status"] not in ("completed", "failed", "interrupted"):
+                raise SessionStateError("Capture is busy or not ready for image processing")
+            if capture["session_id"] is None or self._session(conn, capture["session_id"])["ended_at"] is not None:
+                raise SessionStateError("Processing requires the capture's original active session")
+            conn.execute(
+                "UPDATE captures SET status = 'processing', error = NULL, "
+                "processing_version = ?, updated_at = ? WHERE capture_id = ?",
+                (processing_version, _now(), capture_id),
+            )
+        return None
 
     @property
     def captures(self):

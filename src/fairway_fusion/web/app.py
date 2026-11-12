@@ -18,6 +18,8 @@ from fairway_fusion.web.pico_routes import register_pico_routes
 from fairway_fusion.services.capture_service import CaptureService
 from fairway_fusion.web.capture_routes import register_capture_routes
 from fairway_fusion.hardware.mock_pico import MockPico
+from fairway_fusion.web.vision_routes import register_vision_routes
+from fairway_fusion.web.vision_media_routes import register_vision_media_routes
 
 # Create Flask application instance
 def create_app(test_config=None):
@@ -110,6 +112,8 @@ def create_app(test_config=None):
     app.extensions["mock_capture_service"] = CaptureService(
         MockPico(), store.captures, source="simulation"
     )
+    register_vision_routes(app)
+    register_vision_media_routes(app)
 
     # Return the configured app to Flask or the test runner.
     return app 

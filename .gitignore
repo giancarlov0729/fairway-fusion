@@ -26,3 +26,5 @@ data/calibration/*
 *.db-journal
 *.db-wal
 *.db-shm
+/src/instance/
+/instance/

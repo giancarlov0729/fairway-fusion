@@ -1,16 +1,20 @@
 from fairway_fusion.storage import SessionStateError
 
 
-def arm_session_capture(app, service, session_id=None, **timing):
+def require_capture_session(app, session_id=None):
     if session_id is not None and (type(session_id) is not int or session_id <= 0):
         raise ValueError("session_id must be a positive integer.")
+    active = app.extensions["shot_store"].active_session()
+    if active is None:
+        raise SessionStateError("Start a practice session before creating or arming a capture.")
+    if session_id is not None and session_id != active["id"]:
+        raise SessionStateError("This session is no longer active. Refresh before creating or arming a capture.")
+    return active["id"]
+
+
+def arm_session_capture(app, service, session_id=None, **timing):
     with app.extensions["session_lock"]:
-        active = app.extensions["shot_store"].active_session()
-        if active is None:
-            raise SessionStateError("Start a practice session before arming a capture.")
-        if session_id is not None and session_id != active["id"]:
-            raise SessionStateError("This session is no longer active. Refresh before arming.")
-        return service.arm(session_id=active["id"], **timing)
+        return service.arm(session_id=require_capture_session(app, session_id), **timing)
 
 
 def end_capture_session(app, session_id):

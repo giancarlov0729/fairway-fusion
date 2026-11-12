@@ -1,0 +1,49 @@
+<div class="capture-heading">
+  <div><div class="eyebrow">VISION LAB / SYNTHETIC IMAGES</div><h1>From pixels to a shot.</h1><p class="muted">Run the stereo vision pipeline on saved, computer-generated images.</p></div>
+  <span class="pill">No cameras or Pico required</span>
+</div>
+<div class="vision-flow" aria-label="Vision workflow"><span>01 · Generate & save</span><span>02 · Process images</span><span>03 · Review the result</span></div>
+<div class="capture-layout">
+  <article class="panel capture-console">
+    <div class="eyebrow">1 / CREATE AN IMAGE PAIR</div><h2>A controlled starting point.</h2>
+    <p>Each test saves two monochrome PNGs, synthetic camera calibration, and a 2 ms flash interval. Images are generated, not photographed.</p>
+    {% if not active %}<p class="capture-callout">Start a practice session before creating images. <a href="{{ url_for('index') }}">Go to Practice session ↗</a></p>{% endif %}
+    <form method="post" action="{{ url_for('page_action',action='vision-create') }}">
+      {{ fields() }}<label for="vision-case">Test scenario</label>
+      <select id="vision-case" name="case" class="vision-select">
+        {% for key,label in [('clean','Clean shot'),('leftward','Leftward launch'),('blur','Blurred images'),('uneven-light','Uneven flash brightness'),('shallow','Ambiguous stereo match'),('clutter','Extra bright object / clutter')] %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+      </select>
+      <button class="btn go" {% if not active %}disabled{% endif %}>Generate & save images</button>
+    </form>
+    <p class="muted small">{% if active %}New captures join session #{{ active.id }}.{% else %}No active session.{% endif %} Generation alone does not save a shot.</p>
+  </article>
+  <article class="panel">
+    <div class="eyebrow">2 / PROCESS THE SAVED PAIR</div>
+    {% if capture %}
+      <div class="capture-heading"><h2>{{ 'Images ready.' if not capture.processing_version and capture.status == 'completed' else 'Processing complete.' if vision_shot else 'Capture status.' }}</h2><span class="capture-state state-{{ capture.status }}">{{ vision_shot.status if vision_shot else 'Images ready' if capture.status == 'completed' and not capture.processing_version else capture.status|replace('_',' ') }}</span></div>
+      <dl class="capture-details"><div><dt>Capture ID</dt><dd class="capture-id">{{ capture.capture_id }}</dd></div><div><dt>Session / source</dt><dd>#{{ capture.session_id }} / {{ capture.source }}</dd></div><div><dt>Scenario</dt><dd>{{ capture.timing.fixture_case if capture.timing else '—' }}</dd></div><div><dt>Flash interval</dt><dd>{{ capture.timing.flash_interval_us if capture.timing else '—' }} µs · commanded</dd></div><div><dt>Failure reason</dt><dd>{{ capture.error or 'None' }}</dd></div></dl>
+      {% if assets_error %}<p class="notice">Saved image pair unavailable. {{ assets_error }}</p>{% endif %}
+      {% if capture.status == 'processing' %}<p role="status">Processing is in progress. Refresh this page to check again.</p>{% endif %}
+      <div class="capture-controls">
+        {% if not vision_shot %}<form method="post" action="{{ url_for('page_action',action='vision-process') }}">{{ fields() }}<input type="hidden" name="capture_id" value="{{ capture.capture_id }}"><button class="btn primary" {% if not vision_inputs or not active or active.id != capture.session_id or capture.status not in ['completed','failed','interrupted'] %}disabled{% endif %}>{{ 'Retry processing' if capture.status in ['failed','interrupted'] else 'Process saved images' }}</button></form>{% endif %}
+        <a class="btn" href="{{ url_for('vision_page',capture_id=capture.capture_id) }}">Refresh status</a>
+        {% if vision_shot %}<a class="btn go" href="{{ url_for('result_detail',shot_id=vision_shot.id) }}">Open Shot Analysis ↗</a>{% endif %}
+      </div>
+      {% if not vision_shot and (not active or active.id != capture.session_id) %}<p class="muted small">This capture's original session must still be active to process it.</p>{% endif %}
+    {% else %}<h2>Your saved inputs appear here.</h2><p>Generate an image pair or choose an attempt from the log below. Then process the pair to calculate and save a shot.</p><div class="vision-empty">A + B <span>Saved stereo images</span></div>{% endif %}
+  </article>
+</div>
+{% if capture %}
+  <div class="capture-heading capture-section"><div><div class="eyebrow">SAVED INPUTS / CAMERA A + B</div><h2>The images being analyzed.</h2></div><span class="pill">Synthetic · Not a live camera feed</span></div>
+  {% if vision_inputs %}<div class="camera-previews">{% for camera in ['a','b'] %}<article class="camera-preview"><div class="camera-label">CAMERA {{ camera|upper }} <span>SAVED SYNTHETIC PNG</span></div><img class="vision-image" src="{{ url_for('vision_image',capture_id=capture.capture_id,camera=camera) }}" alt="Saved synthetic camera {{ camera|upper }} input"><p>640 × 480 monochrome · Original generated pixels</p></article>{% endfor %}</div>{% else %}<div class="panel"><p>Image previews are unavailable. No replacement images have been generated.</p></div>{% endif %}
+  {% if vision_shot %}
+    <article class="panel vision-result capture-section"><div class="eyebrow">3 / SAVED VISION RESULT</div>
+      {% if vision_shot.status == 'accepted' %}<h2>The pair produced a launch result.</h2><div class="metrics">{% for value,unit,label in [(vision_shot.speed_mph,'mph','Ball speed'),(vision_shot.launch_angle_deg,'°','Launch angle'),(vision_shot.launch_direction_deg,'°','Direction: + left / − right')] %}<div><div class="fig">{{ num(value) }}<small>{{ unit }}</small></div><div class="cap">{{ label }}</div></div>{% endfor %}</div><p>Synthetic input · Calculated from the saved image pair. This does not establish real-camera accuracy.</p>
+      {% else %}<h2>This pair was rejected.</h2><p class="notice" role="status">{{ vision_shot.reason }}</p><p>The rejection was saved in history. No launch measurements or carry distance were invented.</p>{% endif %}
+      <a class="text-link" href="{{ url_for('result_detail',shot_id=vision_shot.id) }}">View saved shot #{{ vision_shot.id }} and details ↗</a>
+      {% if vision_inputs and capture.detections %}<details class="capture-timing"><summary>Inspect detection & matching overlay</summary><p class="muted small">Crosses show detections. Matching colors and numbers identify the same flash across both views. Rejected pairs may have no valid matches.</p><img class="vision-overlay" src="{{ url_for('vision_overlay',capture_id=capture.capture_id) }}" alt="Saved vision detections and stereo matching overlay"><a class="text-link" href="{{ url_for('vision_overlay',capture_id=capture.capture_id) }}" target="_blank" rel="noopener">Open full-size overlay ↗</a></details>{% endif %}
+    </article>
+  {% endif %}
+{% endif %}
+<div class="capture-heading capture-section"><div><div class="eyebrow">SYNTHETIC IMAGE CAPTURE LOG</div><h2>Return to any test.</h2></div><span class="muted small">Recent image attempts · Saved in SQLite</span></div>
+<div class="table-scroll"><table class="data-table"><thead><tr><th>Capture</th><th>Session</th><th>Scenario</th><th>Capture state</th><th>Processing</th></tr></thead><tbody>{% for item in vision_captures %}<tr><td><a class="capture-id" href="{{ url_for('vision_page',capture_id=item.capture_id) }}">{{ item.capture_id[:12] }}…</a></td><td>#{{ item.session_id }}</td><td>{{ item.timing.fixture_case }}</td><td>{{ item.status|replace('_',' ') }}</td><td>{{ item.detections.vision_status if item.detections and item.status == 'completed' else 'Not processed' if not item.processing_version else item.status|replace('_',' ') }}</td></tr>{% else %}<tr><td colspan="5">No synthetic image captures yet.</td></tr>{% endfor %}</tbody></table></div>
