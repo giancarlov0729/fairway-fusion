@@ -49,5 +49,6 @@ def save_simulated_shot(store, session_id, scenario="straight"):    # Function t
         launch_angle_deg=result["launch_angle_deg"],                        # Store the calculated launch angle in degrees
         launch_direction_deg=result["launch_direction_deg"],                # Store the calculated launch direction in degrees
         source="simulation",                                                # Store the source of the shot as "simulation"
+        carry=result["carry"],                                              # Store the estimate and its model assumptions with the shot
         samples=result["samples"],                                          # Store the input samples (positions and timestamps) in the database
     )

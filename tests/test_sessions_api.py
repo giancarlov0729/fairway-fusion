@@ -21,11 +21,15 @@ def test_complete_session_workflow(app):
     assert shot['speed_m_s'] == pytest.approx(50)
     assert shot['launch_angle_deg'] == pytest.approx(15)
     assert shot['source'] == 'simulation'
+    assert shot['carry']['estimated_carry_m'] > 0
+    assert shot['carry']['carry_is_estimate'] is True
+    assert shot['carry']['carry_assumptions']['backspin_rpm'] == 2500
     assert len(shot['samples']['positions_m']) == 6
     assert client.get(f"/api/shots/{shot['id']}").get_json()['shot'] == shot
     history = client.get(f'/api/shots?session_id={session_id}')
     assert history.status_code == 200
     assert len(history.get_json()['shots']) == 1
+    assert history.get_json()['shots'][0]['carry'] == shot['carry']
     assert client.get('/api/sessions').get_json()['sessions'][0]['shot_count'] == 1
     response = client.post(f'/api/sessions/{session_id}/end')
     assert response.status_code == 200
