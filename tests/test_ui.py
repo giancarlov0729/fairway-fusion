@@ -69,6 +69,11 @@ def test_html_workflow_without_javascript(tmp_path):
     result = client.get(response.headers['Location'])
     assert 'View input samples (6)' in result.text
     assert 'Saved in SQLite' in result.text
+    saved = app.extensions['shot_store'].latest_shot()
+    assert 'Estimated carry' in result.text
+    assert f'{saved["carry"]["estimated_carry_yd"]:.1f}' in result.text
+    assert 'Spin assumed, not measured' in result.text
+    assert 'Assumed backspin: 2500.0 rpm' in result.text
     client.post('/actions/simulate', data=data)
     assert len(app.extensions['shot_store'].list_shots()) == 1
     assert client.get('/results').status_code == 200
@@ -117,4 +122,28 @@ def test_product_pages_and_pico_controls(tmp_path):
     assert 'USB disconnected' in action('status').text
     assert 'DISARMED' in action('disarm').text
     assert 'Disconnected' in action('disconnect').text
+    devices = c.get('/devices').text
+    assert 'These buttons control the physical Pico.' in devices
+    assert 'separate mock controller' in devices
+    assert 'USB-only firmware does not control capture outputs.' not in devices
     assert 'Coming soon' in c.get('/setup').text
+
+
+def test_results_handle_missing_and_failed_carry(tmp_path):
+    app = create_app({'TESTING': True, 'DATABASE_PATH': tmp_path / 'carry-ui.db'})
+    store = app.extensions['shot_store']
+    store.start_session()
+    old = store.save_shot(50, 15)
+    failed = store.save_shot(50, 15, carry={
+        'estimated_carry_m': None, 'apex_height_m': None, 'flight_time_s': None,
+        'carry_model': 'drag_spin', 'carry_assumptions': {},
+        'carry_error': 'No valid trajectory <test>',
+    })
+    client = app.test_client()
+    response = client.get(f'/results/{old["id"]}')
+    assert response.status_code == 200
+    assert 'No carry estimate saved for this shot.' in response.text
+    response = client.get(f'/results/{failed["id"]}')
+    assert response.status_code == 200
+    assert 'No valid trajectory &lt;test&gt;' in response.text
+    assert '<script' not in response.text
