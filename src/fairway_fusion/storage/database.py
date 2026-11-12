@@ -1348,8 +1348,11 @@ class ShotStore:
         assignments = ", ".join(f"{column} = ?" for column in columns)
 
         with closing(self._connect()) as conn, conn:
-            self._capture(conn, capture_id)  # raises NotFoundError if missing
-            self._check_links(conn, columns)
+            # Check the resulting record under the write lock, including
+            # unchanged fields, so separate updates cannot bypass validation.
+            conn.execute("BEGIN IMMEDIATE")
+            current = self._capture(conn, capture_id)
+            self._check_links(conn, {**current, **columns})
             conn.execute(
                 f"UPDATE captures SET {assignments} WHERE capture_id = ?",
                 [*columns.values(), capture_id],
@@ -1594,6 +1597,14 @@ class ShotStore:
                 f"SELECT 1 FROM {table} WHERE {key} = ?", (value,)
             ).fetchone():
                 raise NotFoundError(f"{label} {value} not found")
+        calibration_id = columns.get("calibration_id")
+        if columns.get("source", "live") == "live" and calibration_id is not None:
+            calibration = conn.execute(
+                "SELECT source FROM calibrations WHERE calibration_id = ?",
+                (calibration_id,),
+            ).fetchone()
+            if calibration["source"] != "real":
+                raise ValueError("Live captures require a real calibration, not synthetic calibration")
 
 
 class CaptureRecords:

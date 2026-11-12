@@ -754,6 +754,52 @@ def test_capture_links_must_exist(store):
         store.update_capture(_capture_id(1), calibration_id="0" * 32)
 
 
+@pytest.mark.parametrize("source", [None, "live"])
+def test_live_capture_rejects_synthetic_calibration_on_create(store, source):
+    calibration = store.save_calibration(_camera(0), _camera(0.2), source="synthetic")
+    record = _ethan_record() | {"calibration_id": calibration["calibration_id"]}
+    if source is not None:
+        record["source"] = source
+    with pytest.raises(ValueError, match="real calibration"):
+        store.captures.create(record)
+    assert store.list_captures() == []
+
+
+def test_live_capture_rejects_synthetic_calibration_update(store):
+    calibration = store.save_calibration(_camera(0), _camera(0.2), source="synthetic")
+    original = store.captures.create(_ethan_record())
+    with pytest.raises(ValueError, match="real calibration"):
+        store.captures.update(original["capture_id"],
+                              calibration_id=calibration["calibration_id"], status="armed")
+    assert store.get_capture(original["capture_id"]) == original
+
+
+@pytest.mark.parametrize("source", ["simulation", "replay"])
+def test_switching_to_live_checks_existing_calibration(store, source):
+    synthetic = store.save_calibration(_camera(0), _camera(0.2), source="synthetic")
+    real = store.save_calibration(_camera(0), _camera(0.2), source="real")
+    original = store.create_capture(_ethan_record() | {
+        "source": source, "calibration_id": synthetic["calibration_id"],
+    })
+    with pytest.raises(ValueError, match="real calibration"):
+        store.update_capture(original["capture_id"], source="live")
+    assert store.get_capture(original["capture_id"]) == original
+    updated = store.update_capture(original["capture_id"], source="live",
+                                   calibration_id=real["calibration_id"])
+    assert updated["source"] == "live"
+    assert updated["calibration_id"] == real["calibration_id"]
+
+
+def test_switching_to_live_can_remove_synthetic_calibration(store):
+    synthetic = store.save_calibration(_camera(0), _camera(0.2), source="synthetic")
+    capture = store.create_capture(_ethan_record() | {
+        "source": "simulation", "calibration_id": synthetic["calibration_id"],
+    })
+    updated = store.update_capture(capture["capture_id"], source="live", calibration_id=None)
+    assert updated["source"] == "live"
+    assert updated["calibration_id"] is None
+
+
 def test_mark_interrupted_captures(store):
     """At startup, only unfinished captures become interrupted. Finished ones
     are untouched, and an existing error message is kept."""
