@@ -144,4 +144,40 @@ after the session ends. Carry-model failure leaves a valid launch accepted with
 an empty carry estimate and recorded carry error.
 
 No schema migration is needed: this uses the existing capture/shot columns.
-The processing service is not wired into Flask or the UI until chunks 4 and 5.
+Chunk 4 wires this service into Flask. UI actions remain pending until chunk 5.
+
+## Chunk 4: Flask JSON actions
+
+`POST /api/captures/synthetic` requires a JSON object. `{}` uses the active session,
+clean fixture and 2000-us interval. Optional fields are `session_id`, `case` and
+`flash_interval_us`. An explicit session must match the active session. Unknown
+fields, including source/calibration/image overrides, are refused. Generation is
+synchronous and creates only synthetic inputs; no Pico is connected or triggered.
+
+Success returns 201 with `capture`, `status_url`, `process_url` and a Location header
+pointing to the existing capture-status endpoint. Each successful creation request
+is a NEW attempt, not an idempotent retry. If a response is lost, inspect the capture
+log before creating again. Chunk 5 will use single-use tokens for HTML forms.
+
+`POST /api/captures/<capture_id>/process` accepts an empty body or `{}` and returns
+200 with `capture`, `shot`, `saved: true` and `result_url`. It uses only the inputs
+already associated with that record; session/source/image/timing overrides are
+refused. Repeating processing returns the same saved shot without duplication.
+Normal vision rejection also returns 200: the shot status and reason explain it.
+
+Error behavior:
+- 400: invalid ID, JSON object, option, session ID type, or unsupported fields.
+- 415: a nonempty body with an unsupported content type.
+- 404: unknown capture ID.
+- 409: no active/matching session, closed session for unsaved work, busy capture,
+  or an attempt to process a physical capture through this synthetic workflow.
+- 422: missing/changed/unavailable saved images or calibration; the capture is
+  marked failed and included in the response for repair/retry.
+- 500: generation or unexpected processing failure. The failed capture is included
+  when available, while the underlying exception is logged in the server terminal.
+
+`web/vision_routes.py` registers these endpoints in `create_app`. The shared
+`require_capture_session` helper keeps real arming and synthetic generation aligned.
+Generation uses the shared session lock; processing uses SQLite's atomic claim, so
+parallel processing/session-end requests receive conflicts instead of duplicates.
+The existing physical Arm endpoints and mock-controller forms remain unchanged.
