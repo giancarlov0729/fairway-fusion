@@ -14,6 +14,7 @@ All request and response bodies use JSON. Errors use
 | POST | /api/shots/simulate | 201, {"shot": {...}, "saved": true} |
 | GET | /api/shots?session_id=<id> | {"shots": [...]} |
 | GET | /api/shots/<id> | {"shot": {...}}, including samples |
+| POST | /api/captures/<capture_id>/recover | Disarm/verify/reconcile a reserved Pico attempt |
 
 Simulation requests require a positive integer session_id and an optional
 scenario: straight, high-launch, or right-launch. Default: straight.
@@ -37,3 +38,10 @@ Existing server history is preserved. Keep database files out of Git.
 
 Run one server process. The application lock serializes session transitions
 within that process; it does not coordinate separate database-writing programs.
+
+Capture recovery accepts an empty body or `{}`. Reconnect the Pico first. Lost
+reports are marked interrupted only after DISARMED and a non-active STATUS are
+verified. Failures retain the reservation; no automatic rearming occurs. Hardware
+errors include `active_capture_id` and `recovery_url` when applicable. See
+[capture service recovery](capture_service.md#pico-reboot-and-usb-recovery) for
+details and the distinction between firmware confirmation and physical validation.

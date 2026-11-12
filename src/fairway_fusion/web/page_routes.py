@@ -51,6 +51,7 @@ def register_page_routes(app):
             vision_captures=vision_captures,
             capture=capture, captures=store.list_captures(limit=12),
             mock_active=app.extensions['mock_capture_service'].active_capture_id,
+            pico_active=app.extensions['capture_service'].active_capture_id,
             active=store.active_session(), sessions=store.list_sessions(),
             shots=store.list_shots(session_id=selected), selected=selected, token=token, device=device_status.copy(), latest=store.latest_shot()), status
 
@@ -94,6 +95,11 @@ def register_page_routes(app):
             if tokens.pop(request.form.get('token', ''), None) is None:
                 return redirect(url_for('index'), code=303)
             try:
+                if action == 'recover-capture':
+                    record = app.extensions['capture_service'].recover(capture_key or '')
+                    device_status.update(message=f"Capture {record['capture_id']}: {record['status']}",
+                                         connected=getattr(app.extensions['pico'], 'firmware', None) is not None)
+                    return redirect(url_for('devices'), code=303)
                 if action == 'vision-create':
                     raw_session = request.form.get('session_id')
                     with app.extensions['session_lock']:
