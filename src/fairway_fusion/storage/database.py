@@ -305,9 +305,46 @@ def _migration_3(conn):
     _run_script(conn, CAPTURES_SCHEMA)
 
 
+SHOT_LINKS_AND_CARRY_SCHEMA = """
+-- Adds columns to the existing shots table. ALTER TABLE ... ADD COLUMN keeps
+-- every existing row; old shots simply get empty values in the new columns.
+
+-- Which capture produced this shot. Empty for simulated shots, which have no
+-- capture. The UNIQUE index below allows only ONE shot per capture, which is
+-- what blocks duplicate saves: a retried save of the same capture is refused.
+ALTER TABLE shots ADD COLUMN capture_id TEXT REFERENCES captures(capture_id);
+
+-- Steffano's carry estimate. These are MODEL OUTPUTS, not measurements, and
+-- are kept in their own columns so they can never be mistaken for measured
+-- values. Yards are not stored: they are calculated from metres when read,
+-- the same way mph is calculated from m/s.
+ALTER TABLE shots ADD COLUMN estimated_carry_m REAL;
+ALTER TABLE shots ADD COLUMN apex_height_m REAL;
+ALTER TABLE shots ADD COLUMN flight_time_s REAL;
+
+-- Which model produced the estimate, and every assumption it used (spin,
+-- air density, drag and so on) as JSON, so any carry number can be explained.
+ALTER TABLE shots ADD COLUMN carry_model TEXT;
+ALTER TABLE shots ADD COLUMN carry_assumptions_json TEXT;
+
+-- Why no carry could be estimated (e.g. bad launch angle). When this is set,
+-- the three carry numbers above are empty.
+ALTER TABLE shots ADD COLUMN carry_error TEXT;
+
+-- One shot per capture. SQLite allows many empty (NULL) values in a UNIQUE
+-- index, so simulated shots without a capture are unaffected.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shots_capture ON shots(capture_id);
+"""
+
+
+def _migration_4(conn):
+    """Version 4: link shots to captures, and add carry columns to shots."""
+    _run_script(conn, SHOT_LINKS_AND_CARRY_SCHEMA)
+
+
 # Position in this list = version number it upgrades TO. MIGRATIONS[0] takes
 # a file to version 1, MIGRATIONS[1] to version 2, and so on.
-MIGRATIONS = [_migration_1, _migration_2, _migration_3]
+MIGRATIONS = [_migration_1, _migration_2, _migration_3, _migration_4]
 
 # The version this code expects. Always equal to the number of migrations.
 SCHEMA_VERSION = len(MIGRATIONS)
@@ -346,6 +383,14 @@ class CaptureExistsError(StorageError):
     Suggested HTTP response from the server: 409 Conflict.
     """
     
+class ShotExistsError(StorageError):
+    """This capture already has a saved shot.
+
+    Each capture produces at most one shot. A second save for the same
+    capture is refused rather than silently creating a duplicate in history.
+    Suggested HTTP response from the server: 409 Conflict.
+    """
+
 class SchemaVersionError(StorageError):
     """The database file was written by newer code than this version.
 
@@ -637,6 +682,65 @@ def _capture_columns(fields):
     return columns
 
 
+
+# --- Carry checks ------------------------------------------------------------------
+# Steffano's carry_metrics() returns exactly these keys. Anything else is
+# refused, so a renamed or misspelled key fails loudly instead of being lost.
+_CARRY_KEYS = {
+    "estimated_carry_m", "estimated_carry_yd", "apex_height_m", "flight_time_s",
+    "carry_model", "carry_assumptions", "carry_is_estimate", "carry_error",
+}
+
+# Metres to yards, for reading carry back. 1 yard is exactly 0.9144 m.
+M_TO_YD = 1 / 0.9144
+
+
+def _carry_columns(carry):
+    """Check Steffano's carry dict and return {column: database value}.
+
+    carry=None means no carry was calculated, and every carry column stays
+    empty. estimated_carry_yd and carry_is_estimate are accepted but not
+    stored: yards are recalculated from metres when read, and every stored
+    carry is an estimate by definition.
+    """
+    empty = {
+        "estimated_carry_m": None, "apex_height_m": None, "flight_time_s": None,
+        "carry_model": None, "carry_assumptions_json": None, "carry_error": None,
+    }
+    if carry is None:
+        return empty
+    if not isinstance(carry, dict):
+        raise ValueError("carry must be the dict carry_metrics() returns, or None")
+    unknown = set(carry) - _CARRY_KEYS
+    if unknown:
+        raise ValueError(f"Unknown carry fields: {sorted(unknown)}")
+
+    numbers = {
+        key: _finite_or_none(key, carry.get(key))
+        for key in ("estimated_carry_m", "apex_height_m", "flight_time_s")
+    }
+    error = _text_or_none("carry_error", carry.get("carry_error"))
+    if error:
+        # Steffano's rule: when there is an error, there are no numbers.
+        if any(value is not None for value in numbers.values()):
+            raise ValueError("carry has an error, so its numbers must be empty")
+    else:
+        # No error means a real estimate: all three numbers must be there,
+        # and none of them can be negative.
+        if any(value is None for value in numbers.values()):
+            raise ValueError("carry without an error needs carry, apex and flight time")
+        if any(value < 0 for value in numbers.values()):
+            raise ValueError("carry, apex and flight time cannot be negative")
+
+    return {
+        **numbers,
+        "carry_model": _text_or_none("carry_model", carry.get("carry_model")),
+        "carry_assumptions_json": _json_or_none(
+            "carry_assumptions", carry.get("carry_assumptions")
+        ),
+        "carry_error": error,
+    }
+
 # --- The store -----------------------------------------------------------------
 
 class ShotStore:
@@ -894,25 +998,34 @@ class ShotStore:
         source="simulation",
         samples=None,
         session_id=None,
+        carry=None,
+        capture_id=None,
     ):
         """Store one shot in the active session (or ``session_id``).
 
-        Called after each Simulate Shot press, once the launch angle and ball
-        speed have been calculated.
+        Called after each Simulate Shot press (or, with real hardware, after a
+        capture is processed), once the launch angle and ball speed have been
+        calculated.
 
         Typical accepted shot:
-            store.save_shot(50.1, 15.0, samples=samples)
+            store.save_shot(50.1, 15.0, samples=samples, carry=result["carry"])
 
         Typical rejected shot (calculation failed on bad input):
             store.save_shot(status="rejected", reason=str(error), samples=samples)
+
+        Shot from a real capture (at most one shot per capture):
+            store.save_shot(..., capture_id=capture_id, carry=carry)
 
         Accepted shots need speed and launch angle. Rejected shots need a
         reason and keep whatever values exist, so they stay visible in history.
         ``samples`` is optional raw input, e.g. {"timestamps_s": [...],
         "positions_m": [[x, y, z], ...]}, kept for replay and debugging.
+        ``carry`` is the dict Steffano's carry_metrics() returns, saved as-is.
 
         Returns the saved shot as a dict, including its samples.
-        Raises ValueError for bad values, SessionStateError if no session is open.
+        Raises ValueError for bad values, SessionStateError if no session is
+        open, NotFoundError for an unknown capture, and ShotExistsError if the
+        capture already has a shot.
         """
         # Step 1: validate everything BEFORE opening the database, so bad
         # input never gets anywhere near the stored data.
@@ -951,6 +1064,10 @@ class ShotStore:
             None if samples is None else json.dumps(samples, allow_nan=False)
         )
 
+        carry_columns = _carry_columns(carry)
+        if capture_id is not None:
+            _check_capture_id(capture_id)
+
         # Step 2: write to the database inside one transaction.
         with closing(self._connect()) as conn, conn:
             if session_id is None:
@@ -964,25 +1081,37 @@ class ShotStore:
                 # (_session also raises NotFoundError if the id is bad.)
                 raise SessionStateError(f"Session {session_id} has ended")
 
-            # Insert the row. Ten columns, ten "?" placeholders, ten values,
-            # all in the same order.
+            if capture_id is not None:
+                # The capture must exist, and must not already have a shot.
+                # The UNIQUE index would also refuse a duplicate, but this
+                # check gives a clear message that names the existing shot.
+                self._capture(conn, capture_id)  # raises NotFoundError
+                existing = conn.execute(
+                    "SELECT id FROM shots WHERE capture_id = ?", (capture_id,)
+                ).fetchone()
+                if existing:
+                    raise ShotExistsError(
+                        f"Capture {capture_id} already has shot {existing['id']}"
+                    )
+
+            columns = {
+                "session_id": session_id,
+                "created_at": _now(),
+                "status": status,
+                "reason": reason,
+                **values,
+                "source": source,
+                "samples_json": samples_json,
+                "capture_id": capture_id,
+                **carry_columns,
+            }
+            # Column names come from the fixed dict above, never from the
+            # caller, so building them into the SQL text is safe. Every value
+            # still goes through "?" placeholders.
             cursor = conn.execute(
-                """INSERT INTO shots (session_id, created_at, status, reason,
-                       speed_m_s, launch_angle_deg, launch_direction_deg,
-                       spin_rpm, source, samples_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    session_id,
-                    _now(),
-                    status,
-                    reason,
-                    values["speed_m_s"],
-                    values["launch_angle_deg"],
-                    values["launch_direction_deg"],
-                    values["spin_rpm"],
-                    source,
-                    samples_json,
-                ),
+                f"INSERT INTO shots ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                list(columns.values()),
             )
             # Read the saved row back so the server can show it immediately
             # on the results screen, with the id and timestamp the database set.
@@ -1386,6 +1515,8 @@ def _shot_dict(row, include_samples):
         "launch_direction_deg": row["launch_direction_deg"],  # None for now
         "spin_rpm": row["spin_rpm"],  # None for now
         "source": row["source"],  # "simulated" until real captures exist
+        "capture_id": row["capture_id"],  # None for simulated shots
+        "carry": _carry_dict(row),  # None if no carry was saved
     }
     # Samples are only added when asked for, and turned from JSON text back
     # into a normal dict of lists.
@@ -1414,8 +1545,6 @@ def _calibration_dict(row):
         "notes": row["notes"],
     }
     
-    
-
 
 def _capture_dict(row):
     """Convert a capture row into the dict the server returns.
@@ -1446,4 +1575,28 @@ def _capture_dict(row):
         "detections": loaded("detections_json"),
         "pinned": bool(row["pinned"]),
         "images_deleted_at": row["images_deleted_at"],
+    }
+
+
+def _carry_dict(row):
+    """Rebuild Steffano's carry block from a shot row, or None if there is none.
+
+    Same keys carry_metrics() returns, so the results screen sees the same
+    shape whether it shows a fresh preview or a saved shot from history.
+    """
+    if row["carry_model"] is None and row["carry_error"] is None:
+        return None
+    carry_m = row["estimated_carry_m"]
+    return {
+        "estimated_carry_m": carry_m,
+        "estimated_carry_yd": None if carry_m is None else carry_m * M_TO_YD,
+        "apex_height_m": row["apex_height_m"],
+        "flight_time_s": row["flight_time_s"],
+        "carry_model": row["carry_model"],
+        "carry_assumptions": (
+            None if row["carry_assumptions_json"] is None
+            else json.loads(row["carry_assumptions_json"])
+        ),
+        "carry_is_estimate": True,  # always: carry is modelled, never measured
+        "carry_error": row["carry_error"],
     }

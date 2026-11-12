@@ -18,6 +18,7 @@ from fairway_fusion.storage.database import (
     NotFoundError,
     SchemaVersionError,
     SessionStateError,
+    ShotExistsError,
     ShotStore,
     StorageError,
 )
@@ -33,4 +34,5 @@ __all__ = [
     "SchemaVersionError",
     "CaptureExistsError",
     "CaptureRecords",
+    "ShotExistsError",
 ]
