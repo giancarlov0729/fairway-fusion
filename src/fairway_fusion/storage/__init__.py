@@ -13,6 +13,8 @@ If database.py is ever split or renamed, only this file needs to change.
 # the server can catch them by name and send the right response to the UI.
 # Internal helpers (names starting with "_") are intentionally not exported.
 from fairway_fusion.storage.database import (
+    CaptureExistsError,
+    CaptureRecords,
     NotFoundError,
     SchemaVersionError,
     SessionStateError,
@@ -29,4 +31,6 @@ __all__ = [
     "SessionStateError",
     "NotFoundError",
     "SchemaVersionError",
+    "CaptureExistsError",
+    "CaptureRecords",
 ]
