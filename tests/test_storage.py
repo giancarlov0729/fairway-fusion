@@ -1090,6 +1090,34 @@ def test_cleanup_is_safe_to_repeat_and_ignores_missing_files(store):
     assert store.cleanup_images(keep_accepted=0, keep_other=0)["deleted"] == []
 
 
+@pytest.mark.parametrize("locked_camera", ["camera_a.png", "camera_b.png"])
+def test_failed_cleanup_can_be_retried(store, monkeypatch, locked_camera):
+    store.start_session()
+    _capture_with_images(store, 1, "rejected")
+    capture_id = _capture_id(1)
+    locked_file = store.images_root / f"captures/{capture_id}/{locked_camera}"
+    path_type = type(locked_file)
+    original_unlink = path_type.unlink
+
+    def fail_locked_file(path, *args, **kwargs):
+        if path == locked_file:
+            raise PermissionError("Image file is locked")
+        return original_unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(path_type, "unlink", fail_locked_file)
+        with pytest.raises(PermissionError):
+            store.cleanup_images(keep_accepted=0, keep_other=0)
+
+    assert locked_file.exists()
+    assert store.get_capture(capture_id)["images_deleted_at"] is None
+    assert store.image_files(capture_id)["state"] != "deleted"
+    assert store.cleanup_images(keep_accepted=0, keep_other=0)["deleted"] == [capture_id]
+    assert store.image_files(capture_id)["state"] == "deleted"
+    assert not locked_file.exists()
+    assert store.cleanup_images(keep_accepted=0, keep_other=0)["deleted"] == []
+
+
 @pytest.mark.parametrize("kwargs", [{"keep_accepted": -1}, {"keep_other": 1.5},
                                     {"keep_accepted": True}])
 def test_cleanup_refuses_bad_limits(store, kwargs):

@@ -1491,21 +1491,9 @@ class ShotStore:
                 else:
                     doomed.append(row)
 
-            # Step 1: mark the records first, inside the transaction. If the
-            # file deletion below were to fail part way, the worst case is a
-            # few leftover files on disk, which is harmless. The other order
-            # could leave records saying images exist when they are gone.
-            now = _now()
-            conn.executemany(
-                "UPDATE captures SET images_deleted_at = ?, updated_at = ? "
-                "WHERE capture_id = ?",
-                [(now, now, row["capture_id"]) for row in doomed],
-            )
-        # The "with" block has committed by this point.
-
-        # Step 2: delete the files. missing_ok=True means a file that is
-        # already gone is not an error. Each capture's folder is removed too
-        # if it is now empty.
+        # Delete files before marking each capture as cleaned. A failed or
+        # partial deletion leaves its timestamp empty so cleanup can retry.
+        # missing_ok=True also makes retry safe if some files are already gone.
         for row in doomed:
             for relative in (row["image_a_path"], row["image_b_path"]):
                 if relative is None:
@@ -1518,6 +1506,13 @@ class ShotStore:
                         folder.rmdir()  # only succeeds if the folder is empty
                     except OSError:
                         pass
+            now = _now()
+            with closing(self._connect()) as conn, conn:
+                conn.execute(
+                    "UPDATE captures SET images_deleted_at = ?, updated_at = ? "
+                    "WHERE capture_id = ?",
+                    (now, now, row["capture_id"]),
+                )
         return {"deleted": [row["capture_id"] for row in doomed], "skipped": None}
 
     # Internals ----------------------------------------------------------------
