@@ -1174,6 +1174,13 @@ class ShotStore:
             # on the results screen, with the id and timestamp the database set.
             return self._shot(conn, cursor.lastrowid, include_samples=True)
 
+    def get_capture_shot(self, capture_id):
+        """Return a capture's saved shot, or None while no result exists."""
+        with closing(self._connect()) as conn:
+            self._capture(conn, capture_id)
+            row = conn.execute("SELECT * FROM shots WHERE capture_id = ?", (capture_id,)).fetchone()
+            return None if row is None else _shot_dict(row, include_samples=True)
+
     def get_shot(self, shot_id, include_samples=True):
         """Return one shot by id. Raises NotFoundError if it does not exist.
 

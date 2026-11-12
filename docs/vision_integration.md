@@ -181,3 +181,35 @@ Error behavior:
 Generation uses the shared session lock; processing uses SQLite's atomic claim, so
 parallel processing/session-end requests receive conflicts instead of duplicates.
 The existing physical Arm endpoints and mock-controller forms remain unchanged.
+
+## Chunk 5: server-rendered vision demo
+
+Open `/vision` or choose **Vision demo** in the sidebar. Start a practice session,
+select a scenario, and submit **Generate & save images**. This uses the chunk-2
+service at 2000 us and redirects to `/vision?capture_id=<id>`. Both saved original
+PNGs are displayed; generating images still does not save a shot. Submit **Process
+saved images** to invoke chunk 3, then inspect accepted measurements or the saved
+rejection reason. **Open Shot Analysis** links to the existing results page.
+
+All controls use ordinary HTML forms and existing single-use tokens. Reusing a
+form submission cannot duplicate an attempt; refreshes and image requests do not
+run processing. A repaired failed capture can be retried while its original session
+is active. The page preserves the selected ID in its URL and lists recent synthetic
+image attempts separately from mock timing-controller captures. A completed input
+generation is labelled **Images ready**, not as a processed or measured shot.
+
+`GET /vision/captures/<id>/images/a` and `/images/b` load and verify the saved pair
+through chunk 2, then return PNG image bytes. They do not expose arbitrary disk
+paths, serve physical captures, or substitute missing images with illustrations.
+Missing, changed, cleanup-deleted or invalid inputs show an unavailable message.
+
+After processing, expand **Inspect detection & matching overlay**. The overlay
+endpoint `/vision/captures/<id>/overlay` draws persisted detections/matches and the
+saved outcome over the original pair; it does not rerun vision. The drawing code
+was moved unchanged from `scripts/analyze_shot.py` to `services/vision_overlay.py`,
+which the original CLI still imports. Overlays are generated on request and not
+stored as replacement raw images. An unprocessed capture has no overlay.
+
+The synthetic banner, pixel-source labels and no-hardware notice distinguish this
+screen from mock Pico controls and future physical captures. No JavaScript, file
+uploads, camera acquisition, or physical Arm controls are added in this chunk.
