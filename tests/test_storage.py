@@ -15,6 +15,7 @@ import threading  # used to simulate several server threads saving at once
 import pytest
 
 from fairway_fusion.storage import (
+    CaptureExistsError,
     NotFoundError,
     SchemaVersionError,
     SessionStateError,
@@ -615,4 +616,192 @@ def test_old_database_gains_calibrations_table(tmp_path):
     store = ShotStore(path)
     store.save_calibration(_camera(0), _camera(0.2), source="real")
     assert store.latest_calibration() is not None
+    assert len(store.list_shots()) == 1
+    
+    
+
+
+# --- Captures ------------------------------------------------------------------
+
+
+def _capture_id(n=1):
+    """A valid, readable capture ID: 32 hex characters ending in n."""
+    return f"{n:032x}"
+
+
+def _ethan_record(n=1):
+    """A record exactly like the one Ethan's CaptureService.arm() creates."""
+    return {
+        "capture_id": _capture_id(n),
+        "status": "preparing",
+        "error": None,
+        "timing": {"camera_trigger_us": 5000, "flash_width_us": 5,
+                   "flash_interval_us": 1000, "first_flash_delay_us": 500},
+        "timing_source": "commanded",
+        "pico_report": None,
+    }
+
+
+# Evan's capture report, as the Pico sends it after a shot.
+PICO_REPORT = {
+    "capture_id": _capture_id(1), "boot_id": "a1b2c3d4e5f60718",
+    "trigger_counter": 1, "status": "completed", "error_code": "none",
+    "firmware_version": "PICO2W_CAPTURE_1", "timing_source": "commanded",
+    "camera_trigger_us": 5000, "flash_width_us": 5, "flash_interval_us": 1000,
+    "first_flash_delay_us": 500, "flash_count": 2,
+    "impact_observed_us": 123456, "sequence_done_observed_us": 128000,
+}
+
+
+def test_create_and_get_capture(store):
+    """Ethan's record is saved as-is, with defaults for everything he did not
+    send, and comes back with the same key names he uses."""
+    saved = store.create_capture(_ethan_record())
+    assert saved["capture_id"] == _capture_id(1)
+    assert saved["status"] == "preparing"
+    assert saved["timing"]["flash_interval_us"] == 1000
+    assert saved["source"] == "live"  # default
+    assert saved["pinned"] is False  # default
+    assert saved["created_at"] == saved["updated_at"]
+    assert store.get_capture(_capture_id(1)) == saved
+
+
+def test_capture_lifecycle_updates(store):
+    """A capture moves through its states, the Pico report is stored whole,
+    and created_at never changes while updated_at does."""
+    created = store.create_capture(_ethan_record())
+    for status in ("armed", "capturing", "processing"):
+        store.update_capture(_capture_id(1), status=status)
+    done = store.update_capture(
+        _capture_id(1), status="completed", pico_report=PICO_REPORT,
+        image_a_path=f"captures/{_capture_id(1)}/camera_a.png",
+        image_b_path=f"captures/{_capture_id(1)}/camera_b.png",
+    )
+    assert done["status"] == "completed"
+    assert done["pico_report"] == PICO_REPORT  # every field Evan sent, intact
+    assert done["image_a_path"].endswith("camera_a.png")
+    assert done["created_at"] == created["created_at"]
+    assert done["updated_at"] >= created["updated_at"]
+
+
+def test_duplicate_capture_is_refused(store):
+    """A second create with the same ID fails and leaves the original alone."""
+    store.create_capture(_ethan_record())
+    store.update_capture(_capture_id(1), status="armed")
+    with pytest.raises(CaptureExistsError):
+        store.create_capture(_ethan_record())
+    assert store.get_capture(_capture_id(1))["status"] == "armed"
+
+
+def test_capture_id_cannot_change(store):
+    store.create_capture(_ethan_record())
+    with pytest.raises(ValueError):
+        store.update_capture(_capture_id(1), capture_id=_capture_id(2))
+
+
+def test_missing_capture(store):
+    """Reading or updating an ID that was never created raises NotFoundError."""
+    with pytest.raises(NotFoundError):
+        store.get_capture(_capture_id(9))
+    with pytest.raises(NotFoundError):
+        store.update_capture(_capture_id(9), status="armed")
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"capture_id": "ABC"},  # too short
+        {"capture_id": "F" * 32},  # uppercase: uuid4().hex is always lowercase
+        {"capture_id": "g" * 32},  # not hex
+        {"status": "done"},  # not one of the nine states
+        {"source": "camera"},  # not live/simulation/replay
+        {"timing_source": "guessed"},
+        {"timing": {"flash_interval_us": float("nan")}},  # NaN in JSON
+        {"timing": "1000us"},  # text instead of a dict
+        {"image_a_path": "/home/pi/captures/a.png"},  # absolute path
+        {"image_a_path": "C:/captures/a.png"},  # Windows drive
+        {"image_a_path": "captures\\a.png"},  # backslashes
+        {"image_b_path": "captures/../../etc/passwd"},  # escapes the folder
+        {"pinned": 1},  # must be True/False, not a number
+        {"session_id": True},  # bool is not a session number
+        {"statsu": "armed"},  # typo in a field name
+    ],
+)
+def test_invalid_captures_are_refused(store, changes):
+    """Every kind of bad capture record is refused, and nothing is saved."""
+    with pytest.raises(ValueError):
+        store.create_capture(_ethan_record() | changes)
+    with sqlite3.connect(store.path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM captures").fetchone()[0] == 0
+
+
+def test_capture_links_must_exist(store):
+    """A capture can point at a real session and calibration, but not at
+    ones that do not exist."""
+    session = store.start_session()
+    calibration = store.save_calibration(_camera(0), _camera(0.2), source="real")
+    linked = store.create_capture(_ethan_record(1) | {
+        "session_id": session["id"],
+        "calibration_id": calibration["calibration_id"],
+    })
+    assert linked["calibration_id"] == calibration["calibration_id"]
+
+    with pytest.raises(NotFoundError, match="Session"):
+        store.create_capture(_ethan_record(2) | {"session_id": 999})
+    with pytest.raises(NotFoundError, match="Calibration"):
+        store.update_capture(_capture_id(1), calibration_id="0" * 32)
+
+
+def test_mark_interrupted_captures(store):
+    """At startup, only unfinished captures become interrupted. Finished ones
+    are untouched, and an existing error message is kept."""
+    statuses = {1: "preparing", 2: "armed", 3: "capturing", 4: "processing",
+                5: "completed", 6: "cancelled", 7: "timed_out", 8: "failed"}
+    for n, status in statuses.items():
+        store.create_capture(_ethan_record(n) | {"status": status})
+    store.update_capture(_capture_id(2), error="Pico stopped responding")
+
+    assert store.mark_interrupted_captures() == 4
+
+    after = {n: store.get_capture(_capture_id(n)) for n in statuses}
+    for n in (1, 2, 3, 4):
+        assert after[n]["status"] == "interrupted"
+    for n in (5, 6, 7, 8):
+        assert after[n]["status"] == statuses[n]
+    assert after[1]["error"] == "Server restarted before the capture finished"
+    assert after[2]["error"] == "Pico stopped responding"  # kept, not overwritten
+
+    assert store.mark_interrupted_captures() == 0  # nothing left to mark
+
+
+def test_captures_survive_restart(tmp_path):
+    """A capture saved before a reboot is still there after it, which is what
+    replaces Ethan's temporary in-memory store."""
+    path = tmp_path / "fairway.db"
+    ShotStore(path).create_capture(_ethan_record() | {"pico_report": PICO_REPORT})
+    assert ShotStore(path).get_capture(_capture_id(1))["pico_report"] == PICO_REPORT
+
+
+def test_captures_adapter_matches_ethans_interface(store):
+    """store.captures offers exactly create/get/update, like his
+    MemoryCaptureStore, so CaptureService(pico, store.captures) works."""
+    records = store.captures
+    records.create(_ethan_record())
+    records.update(_capture_id(1), status="armed")
+    record = records.get(_capture_id(1))
+    assert record["status"] == "armed"
+
+    # Like his store, get() returns a copy: changing it changes nothing saved.
+    record["timing"]["flash_width_us"] = 999
+    assert records.get(_capture_id(1))["timing"]["flash_width_us"] == 5
+
+
+def test_old_database_gains_captures_table(tmp_path):
+    """Upgrading the Pi's pre-alpha database adds the captures table, with
+    the old shots still there."""
+    path = tmp_path / "fairway.db"
+    _make_pre_versioning_db(path)
+    store = ShotStore(path)
+    store.create_capture(_ethan_record())
+    assert store.get_capture(_capture_id(1))["status"] == "preparing"
     assert len(store.list_shots()) == 1
