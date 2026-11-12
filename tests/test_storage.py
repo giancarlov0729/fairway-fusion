@@ -896,6 +896,26 @@ def test_shot_linked_to_capture(store):
     assert store.get_shot(shot["id"])["capture_id"] == _capture_id(1)
 
 
+def test_capture_shot_defaults_to_its_own_session(store):
+    session = store.start_session()
+    store.create_capture(_ethan_record() | {"session_id": session["id"]})
+    shot = store.save_shot(50.0, 15.0, capture_id=_capture_id(1))
+    assert shot["session_id"] == session["id"]
+
+
+@pytest.mark.parametrize("explicit_session", [False, True])
+def test_capture_shot_cannot_move_to_a_new_session(store, explicit_session):
+    first = store.start_session()
+    store.create_capture(_ethan_record() | {"session_id": first["id"]})
+    store.end_session()
+    second = store.start_session()
+    options = {"session_id": second["id"]} if explicit_session else {}
+    with pytest.raises(SessionStateError):
+        store.save_shot(50.0, 15.0, capture_id=_capture_id(1), **options)
+    assert store.list_shots() == []
+    assert store.get_capture(_capture_id(1))["session_id"] == first["id"]
+
+
 def test_second_shot_for_same_capture_is_refused(store):
     """Duplicate prevention: one capture produces at most one shot, so a
     retried save is refused and history keeps exactly one copy."""

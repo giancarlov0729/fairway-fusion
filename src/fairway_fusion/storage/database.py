@@ -1076,6 +1076,17 @@ class ShotStore:
 
         # Step 2: write to the database inside one transaction.
         with closing(self._connect()) as conn, conn:
+            if capture_id is not None:
+                capture = self._capture(conn, capture_id)
+                capture_session_id = capture["session_id"]
+                if capture_session_id is not None:
+                    if session_id is not None and session_id != capture_session_id:
+                        raise SessionStateError(
+                            f"Capture {capture_id} belongs to session {capture_session_id}, "
+                            f"not session {session_id}"
+                        )
+                    session_id = capture_session_id
+
             if session_id is None:
                 # Normal case: attach the shot to whichever session is open.
                 active = self._active(conn)
