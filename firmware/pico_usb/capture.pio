@@ -1,0 +1,13 @@
+.program capture
+; Six preloaded words. Each OUT updates both cameras and flash on one edge.
+.wrap_target
+    set y, 5
+segment:
+    pull block
+    out pins, 3
+    out x, 29
+hold:
+    jmp x-- hold
+    jmp y-- segment
+    irq 0
+.wrap
