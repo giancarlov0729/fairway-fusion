@@ -464,3 +464,155 @@ def test_failed_upgrade_changes_nothing(tmp_path, monkeypatch):
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     assert tables == []
+    
+    
+
+
+# --- Calibrations --------------------------------------------------------------
+
+
+def _camera(x_m):
+    """A simple valid camera, as plain lists, sitting at x = x_m metres.
+
+    R is the identity (no rotation), so the camera centre is just -t.
+    """
+    return {
+        "K": [[540.0, 0, 320], [0, 540.0, 240], [0, 0, 1]],
+        "distortion": [0, 0, 0, 0, 0],
+        "R": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        "t": [-x_m, 0, 0],
+        "image_size": [1456, 1088],
+    }
+
+
+def test_save_and_read_back_calibration(store):
+    """A saved calibration comes back unchanged, with a generated 32-character
+    hex ID and a baseline calculated from the camera positions."""
+    saved = store.save_calibration(
+        _camera(0.0), _camera(0.3), source="real",
+        reprojection_error_px=0.21, notes="first real fit",
+    )
+    assert len(saved["calibration_id"]) == 32
+    int(saved["calibration_id"], 16)  # raises if it is not hex
+    assert saved["baseline_m"] == pytest.approx(0.3)
+    assert saved["camera_a"] == _camera(0.0) | {"distortion": [0.0] * 5}
+    assert saved["camera_b"]["image_size"] == [1456, 1088]
+    assert saved["reprojection_error_px"] == 0.21
+    assert store.get_calibration(saved["calibration_id"]) == saved
+
+
+def test_stored_calibration_reproduces_the_same_measurement(store):
+    """The real proof: save Giancarlo's synthetic cameras, rebuild his
+    CameraCalibration objects from what was stored, and his pipeline gives
+    the identical shot result. Nothing was lost or rounded in storage."""
+    import numpy as np
+
+    from fairway_fusion.calibration.stereo_calibration import CameraCalibration
+    from fairway_fusion.pipeline import analyze_stereo_shot
+    from fairway_fusion.synthetic import make_stereo_fixture
+
+    images, cameras, _ = make_stereo_fixture()
+    saved = store.save_calibration(*cameras, source="synthetic")
+
+    # His cameras sit at x = -0.1 m and x = +0.1 m, so 0.2 m apart.
+    assert saved["baseline_m"] == pytest.approx(0.2)
+
+    def rebuild(cam):
+        return CameraCalibration(
+            np.array(cam["K"]), np.array(cam["distortion"]), np.array(cam["R"]),
+            np.array(cam["t"]), tuple(cam["image_size"]),
+        )
+
+    stored = store.get_calibration(saved["calibration_id"])
+    original = analyze_stereo_shot(*images, *cameras, flash_interval_s=0.002)
+    from_db = analyze_stereo_shot(
+        *images, rebuild(stored["camera_a"]), rebuild(stored["camera_b"]),
+        flash_interval_s=0.002,
+    )
+    assert from_db["status"] == "accepted"
+    assert from_db["launch"] == original["launch"]
+
+
+def test_baseline_is_correct_for_rotated_cameras(store):
+    """The baseline must use each camera's real position even when the
+    cameras point in different directions.
+
+    Camera A sits at (1, 0, 0) facing straight ahead. Camera B sits at
+    (0.3, 0.4, 0) and is turned 90 degrees about the vertical axis. For a
+    camera at position p with rotation R, OpenCV stores t = -R p. The true
+    distance between them is sqrt(0.7^2 + 0.4^2) = 0.806 m. A wrong
+    camera-centre formula gives 1.36 m here, so this test catches it.
+    (The other tests use cameras facing the same way, where the wrong
+    formula happens to give the right answer.)
+    """
+    turned = [[0, -1, 0], [1, 0, 0], [0, 0, 1]]  # 90 degrees about z
+    camera_b = _camera(0) | {"R": turned, "t": [0.4, -0.3, 0]}  # t = -R (0.3, 0.4, 0)
+    saved = store.save_calibration(_camera(1.0), camera_b, source="real")
+    assert saved["baseline_m"] == pytest.approx((0.7**2 + 0.4**2) ** 0.5)
+
+
+def test_latest_calibration_by_source(store):
+    """latest_calibration returns the newest of the requested source, and
+    synthetic calibrations never count as real."""
+    assert store.latest_calibration() is None
+
+    first_real = store.save_calibration(_camera(0), _camera(0.2), source="real")
+    synthetic = store.save_calibration(_camera(0), _camera(0.2), source="synthetic")
+    second_real = store.save_calibration(_camera(0), _camera(0.25), source="real")
+
+    assert store.latest_calibration()["calibration_id"] == second_real["calibration_id"]
+    assert store.latest_calibration("synthetic")["calibration_id"] == (
+        synthetic["calibration_id"]
+    )
+    assert store.latest_calibration(None)["calibration_id"] == (
+        second_real["calibration_id"]
+    )
+    assert first_real["calibration_id"] != second_real["calibration_id"]
+
+
+def test_missing_calibration(store):
+    """Asking for a calibration ID that was never saved raises NotFoundError."""
+    with pytest.raises(NotFoundError):
+        store.get_calibration("0" * 32)
+
+
+def _broken(**changes):
+    """A valid camera with some fields replaced by bad values."""
+    return _camera(0.3) | changes
+
+
+@pytest.mark.parametrize(
+    "camera_b, kwargs",
+    [
+        (_broken(K=[[540, 0], [0, 540]]), {}),  # K is 2x2, not 3x3
+        (_broken(K=[[0, 0, 320], [0, 540, 240], [0, 0, 1]]), {}),  # zero focal length
+        (_broken(distortion=[0, 0, 0]), {}),  # 3 coefficients: no lens model uses that
+        (_broken(R=[[2, 0, 0], [0, 1, 0], [0, 0, 1]]), {}),  # scaled, not a rotation
+        (_broken(R=[[-1, 0, 0], [0, 1, 0], [0, 0, 1]]), {}),  # mirror image
+        (_broken(t=[0.3, float("nan"), 0]), {}),  # NaN position
+        (_broken(t=[0.3, 0]), {}),  # only 2 numbers
+        (_broken(image_size=[1456, -1088]), {}),  # negative size
+        (_broken(image_size=[1456.5, 1088]), {}),  # fractional pixels
+        ({"K": _camera(0)["K"]}, {}),  # missing fields
+        (_camera(0.0), {}),  # same position as camera A: no depth possible
+        (_camera(0.3), {"source": "guess"}),  # unknown source
+        (_camera(0.3), {"reprojection_error_px": -1}),  # negative error
+    ],
+)
+def test_invalid_calibrations_are_refused(store, camera_b, kwargs):
+    """Every kind of bad calibration is refused, and nothing is saved."""
+    kwargs = {"source": "real"} | kwargs
+    with pytest.raises(ValueError):
+        store.save_calibration(_camera(0.0), camera_b, **kwargs)
+    assert store.latest_calibration(None) is None
+
+
+def test_old_database_gains_calibrations_table(tmp_path):
+    """Upgrading the Pi's pre-alpha database adds the calibrations table and
+    it works straight away, with the old shots still there."""
+    path = tmp_path / "fairway.db"
+    _make_pre_versioning_db(path)
+    store = ShotStore(path)
+    store.save_calibration(_camera(0), _camera(0.2), source="real")
+    assert store.latest_calibration() is not None
+    assert len(store.list_shots()) == 1
