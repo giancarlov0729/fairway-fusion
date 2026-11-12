@@ -952,7 +952,7 @@ def test_capture_shot_defaults_to_its_own_session(store):
 @pytest.mark.parametrize("explicit_session", [False, True])
 def test_capture_shot_cannot_move_to_a_new_session(store, explicit_session):
     first = store.start_session()
-    store.create_capture(_ethan_record() | {"session_id": first["id"]})
+    store.create_capture(_ethan_record() | {"session_id": first["id"], "status": "completed"})
     store.end_session()
     second = store.start_session()
     options = {"session_id": second["id"]} if explicit_session else {}
@@ -1042,8 +1042,8 @@ def _capture_with_images(store, n, shot_status=None, pinned=False):
 def test_list_captures_newest_first_and_by_session(store):
     """Captures come back newest first, and can be limited to one session."""
     first = store.start_session()
-    store.create_capture(_ethan_record(1) | {"session_id": first["id"]})
-    store.create_capture(_ethan_record(2) | {"session_id": first["id"]})
+    store.create_capture(_ethan_record(1) | {"session_id": first["id"], "status": "completed"})
+    store.create_capture(_ethan_record(2) | {"session_id": first["id"], "status": "cancelled"})
     store.end_session()
     second = store.start_session()
     store.create_capture(_ethan_record(3) | {"session_id": second["id"]})

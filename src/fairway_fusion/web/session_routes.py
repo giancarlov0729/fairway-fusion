@@ -7,6 +7,7 @@ from werkzeug.exceptions import BadRequest
 from fairway_fusion.storage import ShotStore, NotFoundError, SessionStateError
 from fairway_fusion.services.shot_service import save_simulated_shot
 from fairway_fusion.storage.database import DEFAULT_DB_PATH
+from fairway_fusion.web.capture_sessions import end_capture_session
 
 
 def register_session_routes(app):
@@ -16,6 +17,7 @@ def register_session_routes(app):
         database_path = os.environ.get('FAIRWAY_DB') or default_path
     store = ShotStore(database_path)
     lock = RLock()
+    app.extensions['session_lock'] = lock
     app.extensions['shot_store'] = store
 
     @app.errorhandler(NotFoundError)
@@ -43,7 +45,7 @@ def register_session_routes(app):
     @app.post('/api/sessions/<int:session_id>/end')
     def end_session(session_id):
         with lock:
-            session = store.end_session(session_id)
+            session = end_capture_session(app, session_id)
         return jsonify(session=session)
 
     @app.post('/api/shots/simulate')

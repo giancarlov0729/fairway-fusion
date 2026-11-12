@@ -933,6 +933,7 @@ class ShotStore:
         Raises NotFoundError if a given session_id does not exist.
         """
         with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
             # No id given: find the active session ourselves.
             if session_id is None:
                 active = self._active(conn)
@@ -945,6 +946,12 @@ class ShotStore:
             session = self._session(conn, session_id)
             if session["ended_at"] is not None:
                 raise SessionStateError(f"Session {session_id} has already ended")
+            if conn.execute(
+                "SELECT 1 FROM captures WHERE session_id = ? "
+                "AND status IN ('preparing', 'armed', 'capturing', 'processing') LIMIT 1",
+                (session_id,),
+            ).fetchone():
+                raise SessionStateError("Finish or cancel this session's capture before ending it.")
 
             # Filling in ended_at is what makes the session no longer active.
             conn.execute(
@@ -1309,11 +1316,15 @@ class ShotStore:
         marks = ", ".join("?" for _ in columns)
 
         with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
             if conn.execute(
                 "SELECT 1 FROM captures WHERE capture_id = ?", (capture_id,)
             ).fetchone():
                 raise CaptureExistsError(f"Capture {capture_id} already exists")
             self._check_links(conn, columns)
+            if columns.get("session_id") is not None:
+                if self._session(conn, columns["session_id"])["ended_at"] is not None:
+                    raise SessionStateError("Cannot create a capture in an ended session.")
             # Column names come only from _CAPTURE_FIELDS (fixed in this
             # file), never from the caller, so building them into the SQL
             # text is safe. Every value still goes through "?" placeholders.

@@ -58,6 +58,8 @@ def test_terminal_report_releases_capture(setup, state):
     key = service.arm()["capture_id"]
     pico.state = "capturing"
     assert service.poll(key)["status"] == "capturing"
+    assert service.store.get(key)["error"] is None
+    assert service.store.get(key)["pico_report"]["error_code"] == "none"
     pico.state = state
     assert service.poll(key)["status"] == state
     assert service.active_capture_id is None
