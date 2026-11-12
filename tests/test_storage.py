@@ -19,6 +19,7 @@ from fairway_fusion.storage import (
     NotFoundError,
     SchemaVersionError,
     SessionStateError,
+    ShotExistsError,
     ShotStore,
 )
 
@@ -694,6 +695,7 @@ def test_duplicate_capture_is_refused(store):
 
 
 def test_capture_id_cannot_change(store):
+    """Updating a capture can never change its ID."""
     store.create_capture(_ethan_record())
     with pytest.raises(ValueError):
         store.update_capture(_capture_id(1), capture_id=_capture_id(2))
@@ -805,3 +807,142 @@ def test_old_database_gains_captures_table(tmp_path):
     store.create_capture(_ethan_record())
     assert store.get_capture(_capture_id(1))["status"] == "preparing"
     assert len(store.list_shots()) == 1
+    
+
+# --- Carry and shot-to-capture links -------------------------------------------
+
+
+def test_real_carry_estimate_round_trips(store):
+    """Save the carry block from Ethan's real simulated preview (Steffano's
+    carry_metrics output) and get back the same block from history."""
+    from fairway_fusion.services.shot_service import preview_shot
+
+    result = preview_shot("straight")
+    store.start_session()
+    saved = store.save_shot(
+        result["speed_m_s"], result["launch_angle_deg"], carry=result["carry"]
+    )
+    carry = store.get_shot(saved["id"])["carry"]
+
+    original = result["carry"]
+    assert carry["estimated_carry_m"] == original["estimated_carry_m"]
+    assert carry["estimated_carry_yd"] == pytest.approx(original["estimated_carry_yd"])
+    assert carry["apex_height_m"] == original["apex_height_m"]
+    assert carry["flight_time_s"] == original["flight_time_s"]
+    assert carry["carry_model"] == original["carry_model"]
+    assert carry["carry_assumptions"] == original["carry_assumptions"]
+    assert carry["carry_is_estimate"] is True
+    assert carry["carry_error"] is None
+
+
+def test_failed_carry_estimate_is_kept_with_its_reason(store):
+    """When carry cannot be estimated, the shot still saves, with empty
+    carry numbers and the reason, exactly as Steffano's function reports it."""
+    from fairway_fusion.analysis.carry import carry_metrics
+
+    failed = carry_metrics({"speed_m_s": 50.0, "launch_angle_deg": None})
+    assert failed["carry_error"]  # his function did report a problem
+
+    store.start_session()
+    saved = store.save_shot(status="rejected", reason="no launch", carry=failed)
+    assert saved["carry"]["estimated_carry_m"] is None
+    assert saved["carry"]["estimated_carry_yd"] is None
+    assert saved["carry"]["carry_error"] == failed["carry_error"]
+
+
+def test_shot_without_carry_has_none(store):
+    """Shots saved without carry (every shot before this change) report
+    carry as None rather than a block of empty values."""
+    store.start_session()
+    assert store.save_shot(50.0, 15.0)["carry"] is None
+
+
+def _carry(**changes):
+    """A valid carry block, as carry_metrics() returns it, with changes."""
+    return {
+        "estimated_carry_m": 180.0, "estimated_carry_yd": 196.85,
+        "apex_height_m": 25.0, "flight_time_s": 6.0,
+        "carry_model": "drag_lift_v1", "carry_assumptions": {"backspin_rpm": 2500},
+        "carry_is_estimate": True, "carry_error": None,
+    } | changes
+
+
+@pytest.mark.parametrize(
+    "carry",
+    [
+        _carry(estimated_carry_m=float("nan")),  # NaN
+        _carry(apex_height_m=-1.0),  # negative
+        _carry(flight_time_s=None),  # missing number without an error
+        _carry(carry_error="did not land"),  # error AND numbers
+        _carry(carry_assumptions="spin 2500"),  # text instead of a dict
+        _carry(carry_distance=180.0),  # unknown key (renamed field)
+        "180 m",  # not a dict at all
+    ],
+)
+def test_invalid_carry_is_refused(store, carry):
+    """Bad carry blocks are refused and nothing is saved."""
+    store.start_session()
+    with pytest.raises(ValueError):
+        store.save_shot(50.0, 15.0, carry=carry)
+    assert store.latest_shot() is None
+
+
+def test_shot_linked_to_capture(store):
+    """A shot from a real capture records which capture it came from."""
+    store.start_session()
+    store.create_capture(_ethan_record())
+    shot = store.save_shot(50.0, 15.0, capture_id=_capture_id(1), source="live")
+    assert shot["capture_id"] == _capture_id(1)
+    assert store.get_shot(shot["id"])["capture_id"] == _capture_id(1)
+
+
+def test_second_shot_for_same_capture_is_refused(store):
+    """Duplicate prevention: one capture produces at most one shot, so a
+    retried save is refused and history keeps exactly one copy."""
+    store.start_session()
+    store.create_capture(_ethan_record())
+    store.save_shot(50.0, 15.0, capture_id=_capture_id(1))
+    with pytest.raises(ShotExistsError):
+        store.save_shot(50.0, 15.0, capture_id=_capture_id(1))
+    assert len(store.list_shots()) == 1
+
+
+def test_shot_capture_must_exist_and_be_valid(store):
+    """A shot can only point at a capture that exists, with a valid ID."""
+    store.start_session()
+    with pytest.raises(NotFoundError):
+        store.save_shot(50.0, 15.0, capture_id=_capture_id(7))
+    with pytest.raises(ValueError):
+        store.save_shot(50.0, 15.0, capture_id="not-an-id")
+    assert store.latest_shot() is None
+
+
+def test_database_blocks_duplicate_capture_shots_directly(store):
+    """Second line of defence: even writing straight to the file, bypassing
+    save_shot, the UNIQUE index refuses two shots for one capture."""
+    store.start_session()
+    store.create_capture(_ethan_record())
+    store.save_shot(50.0, 15.0, capture_id=_capture_id(1))
+    with pytest.raises(sqlite3.IntegrityError):
+        with sqlite3.connect(store.path) as conn:
+            conn.execute(
+                "INSERT INTO shots (session_id, created_at, status, capture_id) "
+                "VALUES (1, 'now', 'accepted', ?)", (_capture_id(1),)
+            )
+
+
+def test_old_shots_upgrade_with_empty_links_and_carry(tmp_path):
+    """The Pi's demo shots survive the upgrade, with no capture and no carry,
+    and new shots with carry work straight away."""
+    path = tmp_path / "fairway.db"
+    _make_pre_versioning_db(path)
+    store = ShotStore(path)
+
+    old = store.list_shots()[0]
+    assert old["speed_m_s"] == 55.0
+    assert old["capture_id"] is None
+    assert old["carry"] is None
+
+    # The demo database's session is still open, so the new shot joins it.
+    new = store.save_shot(50.0, 15.0, carry=_carry())
+    assert new["carry"]["estimated_carry_m"] == 180.0
