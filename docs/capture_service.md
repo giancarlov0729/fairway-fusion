@@ -28,7 +28,16 @@ Cancellation checks REPORT after DISARM so an already completed waveform is
 not incorrectly labelled cancelled. Unknown captures after a Pico reboot require
 future explicit recovery handling; the service intentionally remains blocked.
 
-There are no Flask routes, background worker, camera preparation, image storage,
+Flask exposes `POST /api/captures/arm` (JSON object, `{}` uses default timings),
+`GET /api/captures/<capture_id>` (poll active hardware or read a stored record),
+and `POST /api/captures/<capture_id>/cancel` (DISARM followed by REPORT).
+Arm accepts only `camera_us`, `width_us`, `interval_us`, and `delay_us`.
+Successful arming returns HTTP 201; status and cancel return HTTP 200, all with
+a `capture` object. Invalid input returns 400, unknown IDs 404, an active-capture
+conflict or firmware rejection 409, and USB failures 503. Hardware errors include
+`active_capture_id` when an attempt remains reserved for recovery. Arming requires
+an existing USB connection running capture firmware; it does not auto-connect.
+There is no background worker, camera preparation, image storage,
 or LED current configuration in this chunk. Use fake hardware for this stage.
 Default timings are example commands, not measured or approved lighting settings.
 Before live integration, camera readiness must precede ARM and persistent storage

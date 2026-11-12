@@ -12,6 +12,10 @@ class CaptureStore(Protocol):
     def update(self, capture_id: str, **changes) -> None: ...
 
 
+class CaptureBusyError(ValueError):
+    pass
+
+
 class MemoryCaptureStore:
     def __init__(self):
         self._records = {}
@@ -56,7 +60,7 @@ class CaptureService:
             raise ValueError("Invalid capture timing.")
         with self._lock:
             if self._active is not None:
-                raise ValueError("A capture is already active; resolve it first.")
+                raise CaptureBusyError("A capture is already active; resolve it first.")
             capture_id = uuid4().hex
             self.store.create({
                 "capture_id": capture_id, "status": "preparing", "error": None,
