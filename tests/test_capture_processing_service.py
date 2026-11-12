@@ -185,14 +185,18 @@ def test_closed_session_or_live_capture_is_not_modified(setup):
     assert store.list_shots() == []
 
 
-def test_changed_input_metadata_cannot_receive_stale_measurements(setup):
+@pytest.mark.parametrize("changes", [
+    {"timing": {"flash_interval_us": 1000, "fixture_case": "clean"}},
+    {"processing_version": "changed-during-processing"},
+])
+def test_changed_input_metadata_cannot_receive_stale_measurements(setup, changes):
     store, sid = setup
     key = create_synthetic_capture(store, sid)["capture_id"]
     from fairway_fusion.services.vision_service import analyze_image_pair
 
     def change_timing(*args, **kwargs):
         result = analyze_image_pair(*args, **kwargs)
-        store.update_capture(key, timing={"flash_interval_us": 1000, "fixture_case": "clean"})
+        store.update_capture(key, **changes)
         return result
 
     with patch("fairway_fusion.services.capture_processing_service.analyze_image_pair", change_timing):

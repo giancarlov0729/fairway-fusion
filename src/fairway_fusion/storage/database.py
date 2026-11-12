@@ -1094,7 +1094,7 @@ class ShotStore:
         if detections is not None and not finalize_capture:
             raise ValueError("detections requires finalize_capture=True")
         input_keys = {"session_id", "source", "calibration_id", "timing", "timing_source",
-                      "image_a_path", "image_b_path"}
+                      "image_a_path", "image_b_path", "processing_version"}
         if finalize_capture and (not isinstance(expected_capture, dict)
                                  or not input_keys.issubset(expected_capture)):
             raise ValueError("Finalizing processing requires the original capture input metadata")

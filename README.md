@@ -6,11 +6,19 @@ The system aims to measure golf ball launch characteristics using high-speed ima
 
 ## Current working demo
 
-The pre-alpha includes a Flask web interface, simulated shot inputs, launch calculations,
-and persistent SQLite history. Cameras are not required for this demo.
+The prototype includes a JavaScript-free Flask interface, simulated shots, a saved-image
+synthetic vision demo, capture records, carry estimates, and persistent SQLite history.
+Cameras are not required for these demonstrations.
 
 Flow: browser → Flask API → simulated timestamped X/Y/Z positions → velocity and
 launch calculations → SQLite → results and history in the browser.
+
+Vision flow: generated Camera A/B PNGs + synthetic calibration + recorded flash
+interval → stereo vision → launch and estimated carry → SQLite → Shot Analysis.
+Open **Vision demo**, start a practice session, generate images, then process them.
+Clean, leftward, blurred and uneven-light fixtures should be accepted; shallow and
+clutter fixtures should be rejected with a reason. Images and overlays are synthetic
+evidence, not proof of real-camera accuracy. See [vision integration](docs/vision_integration.md).
 
 ### Run on Windows (PowerShell)
 
@@ -18,14 +26,14 @@ From the repository root, first-time setup:
 
 ```powershell
 py -m venv .venv
-.\.venv\Scripts\python.exe -m pip install Flask numpy pytest
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
 Each time you want to run the demo:
 
 ```powershell
-.\.venv\Scripts\python.exe -m flask --app fairway_fusion.web.app:create_app run --host 127.0.0.1 --port 5000
+.\.venv\Scripts\python.exe -m flask --app fairway_fusion.web.app:create_app run --host 127.0.0.1 --port 5000 --no-reload
 ```
 
 Open http://localhost:5000. Keep the terminal open; Ctrl+C stops the server.
@@ -39,7 +47,7 @@ From this branch's repository folder, first-time setup:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install Flask numpy pytest
+python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
@@ -47,7 +55,7 @@ For subsequent runs:
 
 ```bash
 source .venv/bin/activate
-python -m flask --app fairway_fusion.web.app:create_app run --host 127.0.0.1 --port 5000
+python -m flask --app fairway_fusion.web.app:create_app run --host 127.0.0.1 --port 5000 --no-reload
 ```
 
 To use the laptop browser with the Pi server, connect from the laptop using
@@ -217,7 +225,7 @@ Install dependencies:
 
 ## Development Status
 
-Current phase: Pre-alpha architectural skeleton.
+Current phase: software prototype with synthetic stereo vision and Pico timing integration.
 
 A basic vertical launch-angle calculation is implemented using calibrated 3D
 positions and timestamps. A synthetic demo and automated tests run without cameras:
@@ -226,8 +234,9 @@ positions and timestamps. A synthetic demo and automated tests run without camer
     python -m pytest
 
 See [launch-angle setup, assumptions, and known limitations](docs/launch_angle.md).
-Camera capture, calibration, and ball tracking remain unimplemented; demo output
-is simulated and does not establish measurement accuracy.
+Synthetic ball detection, stereo reconstruction, result storage, and replay are implemented.
+Live camera acquisition, calibration of the physical rig, and optical timing validation
+remain pending. Synthetic output does not establish physical measurement accuracy.
 
 The computer vision algorithms are under development.
 
@@ -255,3 +264,20 @@ submitting again. Results and history are restored from SQLite. During a connect
 failure, revisit Results/History before retrying a write. There is no automatic
 reconnect, live timer, or background refresh; pages update on navigation or refresh.
 See docs/ui.md for the interface and testing details.
+
+### Repeatable vision verification
+
+From the repository root, with dependencies installed:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests -q
+.\.venv\Scripts\python.exe scripts/verify_vision_workflow.py
+```
+
+The verification script runs all six fixtures, checks results and retries, copies an
+isolated database with its image folder, and processes a copied unprocessed pair.
+It prints a JSON report and leaves artifacts in a new temporary directory. It never
+uses the Pico, opens a listening server, or changes your normal demo database.
+Optionally use `--output-dir .\instance\vision-check-001` with a new folder name.
+Generated runtime captures are ignored by Git; keep the database and its `captures`
+folder together when copying a demo.

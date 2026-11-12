@@ -213,3 +213,32 @@ stored as replacement raw images. An unprocessed capture has no overlay.
 The synthetic banner, pixel-source labels and no-hardware notice distinguish this
 screen from mock Pico controls and future physical captures. No JavaScript, file
 uploads, camera acquisition, or physical Arm controls are added in this chunk.
+
+## Chunk 6: failure and replay verification
+
+Run the complete suite with `python -m pytest tests -q`. In addition to the earlier
+unit and UI checks, recovery tests now copy the SQLite database and captures folder
+to another directory and process each fixture from saved files. Fixture generation
+is explicitly blocked during replay, and the original database remains unchanged.
+Tests cover Flask startup during preparing/processing, retry after interruption,
+media unavailability after cleanup while saved results remain readable, real-
+calibration substitution, and a processing-version change during analysis.
+
+For an inspectable smoke test, run `python scripts/verify_vision_workflow.py`.
+It creates a fresh isolated directory, exercises all six fixtures through Flask's
+test client, checks accepted measurements against known synthetic positions, checks
+rejections and duplicate processing, and validates PNG/overlay/result routes. It
+then makes an SQLite backup with a copy of the captures folder and analyzes a copied
+unprocessed pair. The JSON report records each outcome and synthetic error; these
+numbers are NOT measurements of real-world system accuracy.
+
+The script leaves `original/`, `replay/` and `verification_report.json` for review.
+Use `--output-dir <new-folder>` to choose a destination. Existing folders are never
+overwritten. No port is opened, hardware is not accessed, and the normal application
+database is not modified. Retain both the database and captures folder for replay.
+
+Runtime `src/instance/` and `instance/` folders are ignored by Git so generated PNGs,
+manifests, and databases are not accidentally committed. No existing data is deleted.
+The README now includes the image workflow, full dependency installation and the
+verification command. Real camera acquisition, physical calibration and scope/
+photodiode timing measurements remain separate hardware validation work.
