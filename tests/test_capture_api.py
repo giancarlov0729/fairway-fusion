@@ -40,6 +40,7 @@ def setup(tmp_path):
     pico = Pico()
     app = create_app({"TESTING": True, "DATABASE_PATH": str(tmp_path / "shots.db"),
                       "PICO_CLIENT": pico})
+    app.extensions["shot_store"].start_session()
     return app.test_client(), pico, app.extensions["shot_store"]
 
 

@@ -4,6 +4,7 @@ from flask import redirect, render_template, request, url_for
 from fairway_fusion.services.shot_service import save_simulated_shot
 from fairway_fusion.hardware.pico_client import PicoError
 from fairway_fusion.storage import NotFoundError, SessionStateError
+from fairway_fusion.web.capture_sessions import arm_session_capture, end_capture_session
 
 
 def register_page_routes(app):
@@ -70,7 +71,8 @@ def register_page_routes(app):
                 if action.startswith('capture-'):
                     service = app.extensions['mock_capture_service']
                     if action == 'capture-arm':
-                        record = service.arm()
+                        raw_session = request.form.get('session_id')
+                        record = arm_session_capture(app, service, session_id=int(raw_session) if raw_session else None)
                     else:
                         key = request.form.get('capture_id', '')
                         record = store.get_capture(key)
@@ -100,7 +102,7 @@ def register_page_routes(app):
                 if action == 'start':
                     store.start_session()
                 elif action == 'end':
-                    store.end_session(int(request.form['session_id']))
+                    end_capture_session(app, int(request.form['session_id']))
                 elif action == 'simulate':
                     shot = save_simulated_shot(store, int(request.form['session_id']), request.form.get('scenario', 'straight'))
                     return redirect(url_for('result_detail', shot_id=shot['id']), code=303)

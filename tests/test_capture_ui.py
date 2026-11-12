@@ -21,6 +21,7 @@ def setup(tmp_path):
     config = {"TESTING": True, "DATABASE_PATH": str(tmp_path / "shots.db"),
               "PICO_CLIENT": PhysicalPico()}
     app = create_app(config)
+    app.extensions['shot_store'].start_session()
     return app, app.test_client(), config
 
 

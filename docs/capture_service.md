@@ -31,7 +31,15 @@ future explicit recovery handling; the service intentionally remains blocked.
 Flask exposes `POST /api/captures/arm` (JSON object, `{}` uses default timings),
 `GET /api/captures/<capture_id>` (poll active hardware or read a stored record),
 and `POST /api/captures/<capture_id>/cancel` (DISARM followed by REPORT).
-Arm accepts only `camera_us`, `width_us`, `interval_us`, and `delay_us`.
+Arm accepts `camera_us`, `width_us`, `interval_us`, `delay_us`, and optional
+`session_id`. Flask requires an active practice session and saves its ID before
+CONFIG/ARM. An explicitly supplied session must match the active session; a stale
+session returns 409 and invalid ID types return 400. Mock forms use the same rule.
+Session ending is blocked while either coordinator reserves a capture for that
+session, including unresolved USB failures. SQLite also rejects ending a session
+with preparing/armed/capturing/processing captures and refuses new captures linked
+to ended sessions. A terminal report releases the coordinator's reservation;
+cancelled, timed-out, failed, completed, and interrupted records retain their ID.
 Successful arming returns HTTP 201; status and cancel return HTTP 200, all with
 a `capture` object. Invalid input returns 400, unknown IDs 404, an active-capture
 conflict or firmware rejection 409, and USB failures 503. Hardware errors include

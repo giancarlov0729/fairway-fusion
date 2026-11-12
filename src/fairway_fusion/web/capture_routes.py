@@ -5,6 +5,7 @@ from werkzeug.exceptions import BadRequest
 
 from fairway_fusion.hardware.pico_client import PicoClient, PicoError, PicoRejected
 from fairway_fusion.services.capture_service import CaptureBusyError
+from fairway_fusion.web.capture_sessions import arm_session_capture
 
 
 def register_capture_routes(app):
@@ -27,13 +28,15 @@ def register_capture_routes(app):
         payload = request.get_json()
         if not isinstance(payload, dict):
             raise BadRequest("The request body must be a JSON object.")
-        allowed = {"camera_us", "width_us", "interval_us", "delay_us"}
+        allowed = {"camera_us", "width_us", "interval_us", "delay_us", "session_id"}
         if set(payload) - allowed:
-            raise BadRequest("Allowed fields: camera_us, width_us, interval_us, delay_us.")
+            raise BadRequest("Allowed fields: camera_us, width_us, interval_us, delay_us, session_id.")
+        if "session_id" in payload and (type(payload["session_id"]) is not int or payload["session_id"] <= 0):
+            raise BadRequest("session_id must be a positive integer.")
         try:
             if service.pico.firmware != PicoClient.CAPTURE_FIRMWARE:
                 raise PicoError("Connect the Pico with capture firmware before arming.")
-            record = service.arm(**payload)
+            record = arm_session_capture(app, service, **payload)
         except CaptureBusyError as error:
             return jsonify(error={"code": "capture_busy", "message": str(error)},
                            active_capture_id=service.active_capture_id), 409
