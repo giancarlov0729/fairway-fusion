@@ -1,6 +1,6 @@
 import re
 
-from flask import jsonify, request
+from flask import jsonify, request, url_for
 from werkzeug.exceptions import BadRequest
 
 from fairway_fusion.hardware.pico_client import PicoClient, PicoError, PicoRejected
@@ -17,10 +17,12 @@ def register_capture_routes(app):
 
     def hardware_error(error):
         rejected = isinstance(error, PicoRejected)
+        active_id = service.active_capture_id
         return jsonify(
             error={"code": "pico_rejected" if rejected else "pico_unavailable",
                    "message": str(error)},
-            active_capture_id=service.active_capture_id,
+            active_capture_id=active_id,
+            recovery_url=url_for("recover_capture", capture_id=active_id) if active_id else None,
         ), 409 if rejected else 503
 
     @app.post("/api/captures/arm")
@@ -63,3 +65,19 @@ def register_capture_routes(app):
         except PicoError as error:
             return hardware_error(error)
         return jsonify(capture=record)
+
+    @app.post("/api/captures/<capture_id>/recover")
+    def recover_capture(capture_id):
+        validate_id(capture_id)
+        if request.get_data(cache=True):
+            payload = request.get_json()
+            if not isinstance(payload, dict) or payload:
+                raise BadRequest("Recovery accepts an empty JSON object and no options.")
+        try:
+            record = service.recover(capture_id)
+        except CaptureBusyError as error:
+            return jsonify(error={"code": "capture_busy", "message": str(error)},
+                           active_capture_id=service.active_capture_id), 409
+        except PicoError as error:
+            return hardware_error(error)
+        return jsonify(capture=record, active_capture_id=service.active_capture_id)

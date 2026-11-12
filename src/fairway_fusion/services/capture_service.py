@@ -3,7 +3,7 @@ from threading import Lock
 from typing import Protocol
 from uuid import uuid4
 
-from fairway_fusion.hardware.pico_client import PicoError
+from fairway_fusion.hardware.pico_client import PicoError, PicoRejected
 
 
 class CaptureStore(Protocol):
@@ -110,4 +110,40 @@ class CaptureService:
             except PicoError as error:
                 self.store.update(capture_id, status="failed", error=str(error))
                 raise
-        return self.poll(capture_id)
+        try:
+            return self.poll(capture_id)
+        except PicoRejected as error:
+            if str(error) != "UNKNOWN_CAPTURE":
+                raise
+            return self.recover(capture_id)
+
+    def recover(self, capture_id):
+        with self._lock:
+            if self._active is not None and capture_id != self._active:
+                raise CaptureBusyError("Another capture is active; recover that capture's ID instead.")
+            if capture_id != self._active:
+                return self.store.get(capture_id)
+            try:
+                recovery = self.pico.recover_capture(capture_id)
+                report = recovery["report"]
+                state = recovery["state"]
+                original = self.store.get(capture_id)
+                old_boot = (original.get("pico_report") or {}).get("boot_id")
+                changed_boot = report is not None and old_boot is not None and report.get("boot_id") != old_boot
+                if report is None or changed_boot:
+                    previous = original.get("error")
+                    reason = "Controller boot changed." if changed_boot else "Controller no longer recognizes this capture."
+                    message = (f"{reason} DISARMED acknowledged "
+                               f"and STATUS={state} verified; original outcome is unknown.")
+                    if previous:
+                        message += f" Previous error: {previous}"
+                    self.store.update(capture_id, status="interrupted", error=message)
+                else:
+                    error = report.get("error_code")
+                    self.store.update(capture_id, status=report["status"], pico_report=report,
+                                      error=None if error == "none" else error)
+                self._active = None
+            except PicoError as error:
+                self.store.update(capture_id, status="failed", error=str(error))
+                raise
+            return self.store.get(capture_id)

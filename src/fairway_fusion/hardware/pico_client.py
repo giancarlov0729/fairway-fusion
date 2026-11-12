@@ -89,6 +89,33 @@ class PicoClient:    # Manage 1 connection to the Pico
         with self._lock:                    # Wait until other operations are done
             self._close()                       # Close connection
 
+    def recover_capture(self, capture_id):
+        """Disarm, verify idle outputs, and read the old report under one USB lock."""
+        if not isinstance(capture_id, str) or not re.fullmatch(r"[0-9a-f]{32}", capture_id):
+            raise ValueError("Expected a lowercase UUID hex capture ID.")
+        with self._lock:
+            if self._serial is None or self.firmware != self.CAPTURE_FIRMWARE:
+                raise PicoError("Reconnect the Pico with capture firmware before recovery.")
+            try:
+                self._exchange("DISARM")
+                state = self._exchange("STATUS")
+                if state not in {"idle", "completed", "cancelled", "timed_out", "failed"}:
+                    raise PicoError("Pico is still active after DISARM; recovery was not verified.")
+                try:
+                    report = self._exchange(f"REPORT {capture_id}", capture_id=capture_id)
+                except PicoRejected as error:
+                    if str(error) != "UNKNOWN_CAPTURE":
+                        raise
+                    report = None
+                if report is not None and report["status"] != state:
+                    raise PicoError("Pico recovery STATUS and REPORT disagree.")
+                return {"state": state, "report": report}
+            except PicoRejected:
+                raise
+            except (OSError, ValueError, PicoError) as error:
+                self._close()
+                raise PicoError(str(error)) from error
+
     def _close(self):                               # Internal cleanup                            
         self.firmware = None
         connection, self._serial = self._serial, None   # Save old connection + mark it disconnected

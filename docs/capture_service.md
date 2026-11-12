@@ -25,8 +25,8 @@ not that camera images were acquired, processed, or saved as a shot.
 Transport errors retain the reservation because hardware outcome is uncertain.
 After reconnecting the same controller, poll or cancel the original ID.
 Cancellation checks REPORT after DISARM so an already completed waveform is
-not incorrectly labelled cancelled. Unknown captures after a Pico reboot require
-future explicit recovery handling; the service intentionally remains blocked.
+not incorrectly labelled cancelled. Unknown captures after a Pico reboot remain
+reserved until the recovery procedure below verifies the controller is disarmed.
 
 Flask exposes `POST /api/captures/arm` (JSON object, `{}` uses default timings),
 `GET /api/captures/<capture_id>` (poll active hardware or read a stored record),
@@ -52,6 +52,43 @@ Before live camera integration, camera readiness must precede ARM. SQLite storag
 and startup interruption recovery are connected; image processing remains pending.
 
 Run `python -m pytest tests/test_capture_service.py -q`.
+
+## Pico reboot and USB recovery
+
+Reconnect with `POST /api/pico/connect` (or **Connect Pico** on Devices) after USB
+loss. `POST /api/captures/<capture_id>/recover` then resolves the reserved attempt.
+It accepts no body or `{}`. Errors from capture endpoints include a `recovery_url`
+when an attempt is still reserved. Recovery is never triggered by a GET request.
+
+The real Pico client holds ONE USB lock through DISARM acknowledgement, STATUS,
+and REPORT. It requires DISARMED plus idle/completed/cancelled/timed_out/failed;
+configured/armed/capturing, malformed replies, timeout and unplug do not release
+the reservation. REPORT must agree with STATUS if a report is available. A lost
+report (`UNKNOWN_CAPTURE`) after verification marks the original record interrupted,
+retaining its session, timing and previous Pico report. The error text records the
+verified controller state and that the original outcome remains unknown.
+
+A known same-boot terminal report is saved with its actual outcome; completed is
+not overwritten as interrupted. If a previously recorded boot ID differs, recovery
+preserves the original report and marks the attempt interrupted. A new capture is
+allowed only after the record update succeeds. A failed database write leaves the
+reservation in place. No configuration, ARM or TEST_TRIGGER is issued by recovery.
+
+Devices displays an unresolved physical capture and a single-use **Recover capture**
+form. Reconnect first, then recover. Cancelling a reserved attempt automatically
+uses this same procedure if REPORT returns UNKNOWN_CAPTURE. Other rejections are
+not interpreted as a lost report. A repeated recovery of an already resolved ID
+returns its stored record without hardware commands; trying to recover an old ID
+while another capture is reserved returns 409.
+
+This handles controller loss/reboot while the server retains its reservation.
+Server startup still marks unfinished records interrupted; those historical records
+are not automatically reattached to hardware. DISARM/STATUS verification is protocol
+confirmation, not an electrical measurement of camera or lighting outputs.
+
+Run `python -m pytest tests/test_pico_recovery.py -q`. Tests use the real Python
+USB client with simulated serial firmware; repeat on the physical Pico when it is
+available. No firmware change or reflash is required for these commands.
 
 ## Capture control page
 
