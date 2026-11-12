@@ -1366,6 +1366,146 @@ class ShotStore:
             # COALESCE keeps an existing error message if there was one.
             return cursor.rowcount
 
+    
+    def list_captures(self, session_id=None, limit=50, offset=0):
+        """Return captures newest first, optionally only one session's.
+
+        ``limit`` and ``offset`` page through them, like list_shots.
+        """
+        query = "SELECT * FROM captures"
+        params = []
+        if session_id is not None:
+            query += " WHERE session_id = ?"
+            params.append(session_id)
+        # created_at can tie within a millisecond; rowid breaks the tie.
+        query += " ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?"
+        params += [_bounded(limit), max(int(offset), 0)]
+        with closing(self._connect()) as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [_capture_dict(row) for row in rows]
+
+    # Capture images -----------------------------------------------------------
+    # Image paths are stored relative to the folder the database file lives in
+    # (src/instance/ by default), e.g. "captures/<capture_id>/camera_a.png".
+
+    @property
+    def images_root(self):
+        """The folder image paths are relative to: the database's own folder."""
+        return Path(self.path).parent
+
+    def image_files(self, capture_id):
+        """Report where a capture's images are and whether they still exist.
+
+        Returns {"state": ..., "camera_a": {...}, "camera_b": {...}} where
+        state is one of:
+          "none"     the capture never had images (e.g. it was cancelled)
+          "deleted"  cleanup removed them on purpose (images_deleted_at set)
+          "missing"  paths were saved but a file is gone. Something is wrong.
+          "present"  every saved image file exists
+        Each camera entry has the relative "path" and whether it "exists".
+        Raises NotFoundError if the capture does not exist.
+        """
+        capture = self.get_capture(capture_id)
+        cameras = {}
+        for name in ("camera_a", "camera_b"):
+            relative = capture[f"image_{name[-1]}_path"]
+            exists = relative is not None and (self.images_root / relative).is_file()
+            cameras[name] = {"path": relative, "exists": exists}
+
+        saved = [c for c in cameras.values() if c["path"] is not None]
+        if not saved:
+            state = "none"
+        elif capture["images_deleted_at"] is not None:
+            state = "deleted"
+        elif all(c["exists"] for c in saved):
+            state = "present"
+        else:
+            state = "missing"
+        return {"state": state, **cameras}
+
+    def cleanup_images(self, keep_accepted=200, keep_other=100):
+        """Delete old capture images, keeping the newest ones and every record.
+
+        The rule the team agreed on:
+          - keep images for the newest ``keep_accepted`` captures whose shot
+            was accepted
+          - keep images for the newest ``keep_other`` remaining captures
+            (rejected shots, failures, timeouts), as failure evidence
+          - never touch pinned captures; they do not count toward either limit
+          - keep every database record; only the image files are removed,
+            and images_deleted_at records when
+
+        Call it after a capture finishes processing, or at server startup.
+        It does nothing while any capture is in progress, so it can never
+        delete images a running capture is about to use.
+
+        Returns {"deleted": [capture ids whose images were removed],
+                 "skipped": None, or the reason nothing was done}.
+        """
+        for name, value in (("keep_accepted", keep_accepted), ("keep_other", keep_other)):
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a whole number, 0 or more")
+
+        placeholders = ", ".join("?" for _ in UNFINISHED_CAPTURE_STATUSES)
+        with closing(self._connect()) as conn, conn:
+            if conn.execute(
+                f"SELECT 1 FROM captures WHERE status IN ({placeholders}) LIMIT 1",
+                UNFINISHED_CAPTURE_STATUSES,
+            ).fetchone():
+                return {"deleted": [], "skipped": "A capture is in progress"}
+
+            # Every capture that still has images and is not pinned, newest
+            # first. LEFT JOIN brings in its shot (if any) so captures can be
+            # split into "accepted" and "other".
+            rows = conn.execute(
+                """SELECT c.capture_id, c.image_a_path, c.image_b_path,
+                          s.status AS shot_status
+                   FROM captures c
+                   LEFT JOIN shots s ON s.capture_id = c.capture_id
+                   WHERE c.images_deleted_at IS NULL
+                     AND c.pinned = 0
+                     AND (c.image_a_path IS NOT NULL OR c.image_b_path IS NOT NULL)
+                   ORDER BY c.created_at DESC, c.rowid DESC"""
+            ).fetchall()
+
+            kept = {"accepted": 0, "other": 0}
+            limit = {"accepted": keep_accepted, "other": keep_other}
+            doomed = []
+            for row in rows:
+                group = "accepted" if row["shot_status"] == "accepted" else "other"
+                if kept[group] < limit[group]:
+                    kept[group] += 1
+                else:
+                    doomed.append(row)
+
+            # Step 1: mark the records first, inside the transaction. If the
+            # file deletion below were to fail part way, the worst case is a
+            # few leftover files on disk, which is harmless. The other order
+            # could leave records saying images exist when they are gone.
+            now = _now()
+            conn.executemany(
+                "UPDATE captures SET images_deleted_at = ?, updated_at = ? "
+                "WHERE capture_id = ?",
+                [(now, now, row["capture_id"]) for row in doomed],
+            )
+        # The "with" block has committed by this point.
+
+        # Step 2: delete the files. missing_ok=True means a file that is
+        # already gone is not an error. Each capture's folder is removed too
+        # if it is now empty.
+        for row in doomed:
+            for relative in (row["image_a_path"], row["image_b_path"]):
+                if relative is None:
+                    continue
+                file = self.images_root / relative
+                file.unlink(missing_ok=True)
+                folder = file.parent
+                if folder != self.images_root:
+                    try:
+                        folder.rmdir()  # only succeeds if the folder is empty
+                    except OSError:
+                        pass
+        return {"deleted": [row["capture_id"] for row in doomed], "skipped": None}
 
     # Internals ----------------------------------------------------------------
     # These take an already-open connection, so a public method can do several

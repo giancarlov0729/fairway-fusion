@@ -946,3 +946,133 @@ def test_old_shots_upgrade_with_empty_links_and_carry(tmp_path):
     # The demo database's session is still open, so the new shot joins it.
     new = store.save_shot(50.0, 15.0, carry=_carry())
     assert new["carry"]["estimated_carry_m"] == 180.0
+    
+    
+
+# --- Listing captures, image files and cleanup ---------------------------------
+
+
+def _capture_with_images(store, n, shot_status=None, pinned=False):
+    """Create capture n with two real image files on disk, like Ethan's
+    workflow will, and optionally a shot ("accepted" or "rejected") for it."""
+    folder = f"captures/{_capture_id(n)}"
+    for name in ("camera_a.png", "camera_b.png"):
+        path = store.images_root / folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake png")
+    store.create_capture(_ethan_record(n) | {
+        "status": "completed",
+        "image_a_path": f"{folder}/camera_a.png",
+        "image_b_path": f"{folder}/camera_b.png",
+        "pinned": pinned,
+    })
+    if shot_status == "accepted":
+        store.save_shot(50.0, 15.0, capture_id=_capture_id(n))
+    elif shot_status == "rejected":
+        store.save_shot(status="rejected", reason="ball not visible",
+                        capture_id=_capture_id(n))
+
+
+def test_list_captures_newest_first_and_by_session(store):
+    """Captures come back newest first, and can be limited to one session."""
+    first = store.start_session()
+    store.create_capture(_ethan_record(1) | {"session_id": first["id"]})
+    store.create_capture(_ethan_record(2) | {"session_id": first["id"]})
+    store.end_session()
+    second = store.start_session()
+    store.create_capture(_ethan_record(3) | {"session_id": second["id"]})
+
+    assert [c["capture_id"] for c in store.list_captures()] == [
+        _capture_id(3), _capture_id(2), _capture_id(1)
+    ]
+    assert [c["capture_id"] for c in store.list_captures(first["id"])] == [
+        _capture_id(2), _capture_id(1)
+    ]
+
+
+def test_image_files_reports_each_state(store):
+    """present, missing, deleted and none are each reported correctly, so
+    history can flag a shot whose images went missing."""
+    store.start_session()
+    _capture_with_images(store, 1)
+    assert store.image_files(_capture_id(1))["state"] == "present"
+    assert store.image_files(_capture_id(1))["camera_a"]["exists"] is True
+
+    # Someone deletes a file by hand: that is "missing", a real problem.
+    (store.images_root / f"captures/{_capture_id(1)}/camera_b.png").unlink()
+    files = store.image_files(_capture_id(1))
+    assert files["state"] == "missing"
+    assert files["camera_b"]["exists"] is False
+
+    # Cleanup removing them on purpose is "deleted", not "missing".
+    store.update_capture(_capture_id(1), images_deleted_at="2026-11-20T00:00:00+00:00")
+    assert store.image_files(_capture_id(1))["state"] == "deleted"
+
+    # A capture that never had images (e.g. cancelled before impact).
+    store.create_capture(_ethan_record(2) | {"status": "cancelled"})
+    assert store.image_files(_capture_id(2))["state"] == "none"
+
+
+def test_cleanup_keeps_newest_of_each_group(store):
+    """With limits of 2 accepted and 1 other, only the oldest images go, the
+    records and shots all stay, and images_deleted_at is set."""
+    store.start_session()
+    _capture_with_images(store, 1, "accepted")  # oldest accepted: deleted
+    _capture_with_images(store, 2, "rejected")  # oldest other: deleted
+    _capture_with_images(store, 3, "accepted")  # kept (2nd newest accepted)
+    _capture_with_images(store, 4, None)        # kept (newest other: no shot)
+    _capture_with_images(store, 5, "accepted")  # kept (newest accepted)
+
+    result = store.cleanup_images(keep_accepted=2, keep_other=1)
+
+    assert sorted(result["deleted"]) == [_capture_id(1), _capture_id(2)]
+    assert result["skipped"] is None
+    for n in (1, 2):
+        assert store.image_files(_capture_id(n))["state"] == "deleted"
+        assert not (store.images_root / f"captures/{_capture_id(n)}").exists()
+    for n in (3, 4, 5):
+        assert store.image_files(_capture_id(n))["state"] == "present"
+
+    # Every record and shot is still there; only files were removed.
+    assert len(store.list_captures()) == 5
+    assert len(store.list_shots()) == 4
+
+
+def test_cleanup_never_touches_pinned_captures(store):
+    """Pinned captures keep their images and do not use up the limits."""
+    store.start_session()
+    _capture_with_images(store, 1, "accepted", pinned=True)  # oldest, but pinned
+    _capture_with_images(store, 2, "accepted")
+    result = store.cleanup_images(keep_accepted=1, keep_other=0)
+    assert result["deleted"] == []
+    assert store.image_files(_capture_id(1))["state"] == "present"
+    assert store.image_files(_capture_id(2))["state"] == "present"
+
+
+def test_cleanup_waits_while_a_capture_is_in_progress(store):
+    """Nothing is deleted while any capture is still running."""
+    store.start_session()
+    _capture_with_images(store, 1, "accepted")
+    store.create_capture(_ethan_record(2) | {"status": "armed"})
+    result = store.cleanup_images(keep_accepted=0, keep_other=0)
+    assert result == {"deleted": [], "skipped": "A capture is in progress"}
+    assert store.image_files(_capture_id(1))["state"] == "present"
+
+
+def test_cleanup_is_safe_to_repeat_and_ignores_missing_files(store):
+    """Running cleanup again deletes nothing new, and a file already gone
+    is not an error."""
+    store.start_session()
+    _capture_with_images(store, 1, "rejected")
+    (store.images_root / f"captures/{_capture_id(1)}/camera_a.png").unlink()
+
+    assert store.cleanup_images(keep_accepted=0, keep_other=0)["deleted"] == [_capture_id(1)]
+    assert store.cleanup_images(keep_accepted=0, keep_other=0)["deleted"] == []
+
+
+@pytest.mark.parametrize("kwargs", [{"keep_accepted": -1}, {"keep_other": 1.5},
+                                    {"keep_accepted": True}])
+def test_cleanup_refuses_bad_limits(store, kwargs):
+    """Limits must be whole numbers, 0 or more."""
+    with pytest.raises(ValueError):
+        store.cleanup_images(**kwargs)
