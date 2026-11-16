@@ -3,8 +3,9 @@
 #include <stdint.h>
 
 // GP2 and GP3 go to the two non-inverting camera buffers (active low).
-// GP4 is the active-high flash logic input. GP5 accepts a conditioned gate.
-enum { CAMERA_A_PIN = 2, FLASH_PIN = CAMERA_A_PIN + 2, MIC_PIN = 5 };
+// GP4 is the active-high flash logic input. GP6 accepts a conditioned gate.
+// GP5 is inaccessible on the assembled board; GP7 is reserved and unused.
+enum { CAMERA_A_PIN = 2, FLASH_PIN = CAMERA_A_PIN + 2, MIC_PIN = 6 };
 enum { PIO_TICKS_PER_US = 10, IDLE_PINS = 3, FLASH_ON = 4 };
 
 typedef struct {
