@@ -1113,6 +1113,15 @@ class ShotStore:
                     raise SessionStateError("Capture is not available for processing completion")
                 if finalize_capture and any(capture[key] != expected_capture[key] for key in input_keys):
                     raise SessionStateError("Capture inputs changed while processing; result was not saved")
+                # A shot always carries its capture's source. Without this, a
+                # real capture could produce a shot labelled "simulation" (or
+                # a simulated one a shot labelled "live"), and history would
+                # mix fake and real data without anyone noticing.
+                if capture["source"] != source:
+                    raise ValueError(
+                        f"Shot source {source!r} does not match capture source "
+                        f"{capture['source']!r}"
+                    )
                 capture_session_id = capture["session_id"]
                 if capture_session_id is not None:
                     if session_id is not None and session_id != capture_session_id:

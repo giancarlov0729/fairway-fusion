@@ -945,7 +945,7 @@ def test_shot_linked_to_capture(store):
 def test_capture_shot_defaults_to_its_own_session(store):
     session = store.start_session()
     store.create_capture(_ethan_record() | {"session_id": session["id"]})
-    shot = store.save_shot(50.0, 15.0, capture_id=_capture_id(1))
+    shot = store.save_shot(50.0, 15.0, capture_id=_capture_id(1), source="live")
     assert shot["session_id"] == session["id"]
 
 
@@ -957,7 +957,7 @@ def test_capture_shot_cannot_move_to_a_new_session(store, explicit_session):
     second = store.start_session()
     options = {"session_id": second["id"]} if explicit_session else {}
     with pytest.raises(SessionStateError):
-        store.save_shot(50.0, 15.0, capture_id=_capture_id(1), **options)
+        store.save_shot(50.0, 15.0, capture_id=_capture_id(1), source="live", **options)
     assert store.list_shots() == []
     assert store.get_capture(_capture_id(1))["session_id"] == first["id"]
 
@@ -967,9 +967,9 @@ def test_second_shot_for_same_capture_is_refused(store):
     retried save is refused and history keeps exactly one copy."""
     store.start_session()
     store.create_capture(_ethan_record())
-    store.save_shot(50.0, 15.0, capture_id=_capture_id(1))
+    store.save_shot(50.0, 15.0, capture_id=_capture_id(1), source="live")
     with pytest.raises(ShotExistsError):
-        store.save_shot(50.0, 15.0, capture_id=_capture_id(1))
+        store.save_shot(50.0, 15.0, capture_id=_capture_id(1), source="live")
     assert len(store.list_shots()) == 1
 
 
@@ -988,7 +988,7 @@ def test_database_blocks_duplicate_capture_shots_directly(store):
     save_shot, the UNIQUE index refuses two shots for one capture."""
     store.start_session()
     store.create_capture(_ethan_record())
-    store.save_shot(50.0, 15.0, capture_id=_capture_id(1))
+    store.save_shot(50.0, 15.0, capture_id=_capture_id(1), source="live")
     with pytest.raises(sqlite3.IntegrityError):
         with sqlite3.connect(store.path) as conn:
             conn.execute(
@@ -1033,10 +1033,10 @@ def _capture_with_images(store, n, shot_status=None, pinned=False):
         "pinned": pinned,
     })
     if shot_status == "accepted":
-        store.save_shot(50.0, 15.0, capture_id=_capture_id(n))
+        store.save_shot(50.0, 15.0, capture_id=_capture_id(n), source="live")
     elif shot_status == "rejected":
         store.save_shot(status="rejected", reason="ball not visible",
-                        capture_id=_capture_id(n))
+                        capture_id=_capture_id(n), source="live")
 
 
 def test_list_captures_newest_first_and_by_session(store):
