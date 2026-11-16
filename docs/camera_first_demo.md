@@ -7,9 +7,12 @@ launch angle, stereo accuracy, spin and optical timing remain unqualified.
 
 ## Assemble in this order
 
-1. Inspect each camera for a fitted, compatible C/CS lens. A bare sensor cannot form
-   a useful scene image. Remove lens caps, focus and lock the lens on the ball plane.
-   Confirm the actual lens/mount compatibility with the vendor before buying anything.
+1. Check each camera and its packaging for the included **M12 lens and M12 lens
+   seat**. InnoMaker's CAM-IMX296RAW / CAM-IMX296Mono-GS packing list includes these,
+   plus a CS lens seat and two FPC cables. A separate C/CS lens is optional; start
+   with the bundled M12 lens. Confirm the contents of your actual order before
+   purchasing anything. Remove lens caps, fit the supplied lens/holder if needed,
+   and focus on the ball plane. A bare sensor cannot form a useful scene image.
 2. Shut down and unplug the Pi. Connect one camera to each Pi 5 CAM/DISP connector.
    Pi 5 uses 22-pin mini connectors; match the cable's camera end to the received
    InnoMaker board. Seat each ribbon squarely and latch it with the correct contact
