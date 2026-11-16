@@ -138,14 +138,14 @@ the completed commanded timing report, and disarms on exit. Do not run Flask or 
 serial monitor against the same port concurrently. A serial permission error may
 require adding your Pi login to `dialout`, then logging out and back in.
 
-GP2/GP3 are active-low camera-buffer logic, GP4 active-high flash logic, and GP6 the
+GP2/GP3 are active-low camera-buffer logic, GP4 active-high flash logic, and GP7 the
 conditioned active-high gate input in current firmware. **Do not connect Pico 3.3 V
 GPIO directly to camera trigger pads on the basis of this pin list.** Confirm the
 specific camera board's voltage, polarity and interface first. Without a validated
 interface, keep the cameras free-running and demonstrate Pico arming separately.
-GP6 is physical pin 9; the earlier GP5 assignment has been replaced because GP5
-is inaccessible on the assembled Pico. GP7 is unused. See
-[the SEN-14262 wiring table](pico_capture.md#sen-14262-wiring-for-the-gp6-assembly)
+GP7 is physical pin 10; the confirmed assembly exposes GP7 and GP8, replacing the
+earlier GP5/GP6 assignments. GP8 is unused. See
+[the SEN-14262 wiring table](pico_capture.md#sen-14262-wiring-for-the-gp7-assembly)
 for sensor power and divider connections. Rebuild and flash the updated UF2 before
 testing a real microphone trigger.
 No raw microphone wiring is required: TEST_TRIGGER replaces the impact input for

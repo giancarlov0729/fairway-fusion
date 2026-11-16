@@ -46,21 +46,21 @@ Match the returned `capture_id` to the two saved camera images. Save the report 
 
 ## Logic-level integration
 
-The proposed pin map is centralized in `timing.h`. GP2 and GP3 drive the camera-buffer inputs together, idle high and asserted low. GP4 is flash logic, idle low and asserted high. **GP6 (physical pin 9)** accepts the conditioned, active-high microphone gate or a 3.3 V test signal. The assembled board's GP5 is inaccessible, so the microphone input has moved from GP5 to GP6. GP7 (physical pin 10) is reserved and unused. Verify the received hardware's polarity, input voltage and external idle pulls before wiring. Keep the LED driver inhibited independently during reset and logic-only tests. The firmware does not configure lighting-board SPI or current.
+The proposed pin map is centralized in `timing.h`. GP2 and GP3 drive the camera-buffer inputs together, idle high and asserted low. GP4 is flash logic, idle low and asserted high. **GP7 (physical pin 10)** accepts the conditioned, active-high microphone gate or a 3.3 V test signal. The confirmed assembly exposes GP7 and GP8; GP8 (physical pin 11) is reserved and unused. Verify the received hardware's polarity, input voltage and external idle pulls before wiring. Keep the LED driver inhibited independently during reset and logic-only tests. The firmware does not configure lighting-board SPI or current.
 
-### SEN-14262 wiring for the GP6 assembly
+### SEN-14262 wiring for the GP7 assembly
 
 | Detector connection | Pico connection |
 | --- | --- |
-| GATE | Conditioned divider output to GP6, physical pin 9 |
+| GATE | Conditioned divider output to GP7, physical pin 10 |
 | GND | GND, for example physical pin 8; also the divider ground |
 | VCC | Recommended: USB VBUS, physical pin 40, with the divider below |
 | AUDIO / ENVELOPE | Leave disconnected |
 
-For a divider, connect GATE through 4.7 kOhm to the GP6 junction, then another
+For a divider, connect GATE through 4.7 kOhm to the GP7 junction, then another
 4.7 kOhm from that junction to ground (nominal 2.5 V from a 5 V GATE). The earlier
 10 kOhm upper / 15 kOhm lower combination also works (nominal 3.0 V). Check the
-actual loaded logic levels on the assembled board. Do not connect anything to GP7
+actual loaded logic levels on the assembled board. Do not connect anything to GP8
 for this digital-trigger test. Soldering a header does not require using that pin.
 
 The existing soldered 3V3 pin (physical pin 36) does not change firmware operation.
@@ -72,8 +72,8 @@ supply or a GATE output stuck high. See the
 [SparkFun guide](https://learn.sparkfun.com/tutorials/sound-detector-hookup-guide/)
 and [Pico 2 W pinout](https://datasheets.raspberrypi.com/picow/pico-2-w-pinout.pdf).
 
-Rebuild and flash the UF2 after changing pins; the previously flashed image still
-listens on GP5. USB commands and timing settings are unchanged. After flashing,
+Rebuild and flash the UF2 after changing pins; images built before this correction
+may listen on GP5 or GP6. USB commands and timing settings are unchanged. After flashing,
 verify GATE is low in quiet conditions, arm the controller, then produce a sound
 and confirm a completed REPORT. This verifies the microphone input path only;
 keep GP2/GP3/GP4 disconnected from camera/lighting interfaces during the bench test.
