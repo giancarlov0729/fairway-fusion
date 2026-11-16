@@ -4,6 +4,15 @@ Fairway Fusion is a dual-camera computer vision golf launch monitor developed as
 
 The system aims to measure golf ball launch characteristics using high-speed imaging and computer vision techniques.
 
+## Camera-first hardware bring-up
+
+With the IMX296 cameras, Pi 5 and Pico 2 W available, start with the
+[assembly and TA demo guide](docs/camera_first_demo.md). It includes live dual-camera
+preview, ball candidates, manual before/after clips and separate Pico logic arming
+checks while the LCD and IR driver PCB are pending. Run `python scripts/camera_bench.py`
+on the Pi after the guide's setup. These free-running clips do not establish synchronized
+capture, launch or spin accuracy and are separate from the synthetic web demo.
+
 ## Current working demo
 
 The prototype includes a JavaScript-free Flask interface, simulated shots, a saved-image
