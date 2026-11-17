@@ -346,10 +346,32 @@ def _migration_4(conn):
     _run_script(conn, SHOT_LINKS_AND_CARRY_SCHEMA)
 
 
+CAPTURE_PURPOSE_AND_CAMERAS_SCHEMA = """
+-- Adds two columns to captures. Existing captures keep all their data and
+-- get purpose 'shot' and no camera metadata.
+
+-- What the capture is for. 'shot' attempts are processed into speed and
+-- angles. 'camera_test' captures only prove both cameras took images; they
+-- never produce a shot, so a test with good images and no metrics is a
+-- success, not a failed shot.
+ALTER TABLE captures ADD COLUMN purpose TEXT NOT NULL DEFAULT 'shot'
+    CHECK (purpose IN ('shot', 'camera_test'));
+
+-- What each camera actually reported for this capture (identity, image size,
+-- pixel format, exposure, gain, sensor timestamp), as JSON. Anything not
+-- recorded is stored as null, meaning unknown, never a guessed value.
+ALTER TABLE captures ADD COLUMN camera_metadata_json TEXT;
+"""
+
+
+def _migration_5(conn):
+    """Version 5: add capture purpose and per-camera metadata."""
+    _run_script(conn, CAPTURE_PURPOSE_AND_CAMERAS_SCHEMA)
+
+
 # Position in this list = version number it upgrades TO. MIGRATIONS[0] takes
 # a file to version 1, MIGRATIONS[1] to version 2, and so on.
-MIGRATIONS = [_migration_1, _migration_2, _migration_3, _migration_4]
-
+MIGRATIONS = [_migration_1, _migration_2, _migration_3, _migration_4, _migration_5]
 # The version this code expects. Always equal to the number of migrations.
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -651,6 +673,72 @@ def _flag(key, value):
     return int(value)
 
 
+
+
+# The details recorded for each camera. Every key is optional; a key that is
+# not supplied is stored as None, meaning "not recorded", never a guess.
+# Values are what the camera REPORTED for this capture (e.g. the exposure it
+# actually used), not what was requested.
+CAMERA_METADATA_KEYS = {
+    "model": "text",               # e.g. "imx296"
+    "camera_id": "text",           # Picamera2's identity string for the sensor
+    "connector": "text",           # which Pi port it is plugged into, e.g. "CAM0"
+    "width": "pixels",             # image size actually captured
+    "height": "pixels",
+    "pixel_format": "text",        # e.g. "YUV420", "R8"
+    "exposure_us": "measure",      # reported exposure time, microseconds
+    "analogue_gain": "measure",    # reported sensor gain
+    "sensor_timestamp_ns": "count",  # the camera's own frame timestamp
+}
+
+
+def _camera_metadata(key, value):
+    """Check per-camera metadata and store it as JSON with every key present.
+
+    Accepts {"camera_a": {...}, "camera_b": {...}}. Either camera may be left
+    out or None, e.g. when one camera failed to capture; it is then stored as
+    None. Missing keys inside a camera are filled with None.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} must be a dict with camera_a and/or camera_b, or None")
+    unknown = set(value) - {"camera_a", "camera_b"}
+    if unknown:
+        raise ValueError(f"Unknown cameras in {key}: {sorted(unknown)}")
+
+    cleaned = {}
+    for camera in ("camera_a", "camera_b"):
+        details = value.get(camera)
+        if details is None:
+            cleaned[camera] = None
+            continue
+        if not isinstance(details, dict):
+            raise ValueError(f"{key} {camera} must be a dict or None")
+        unknown = set(details) - set(CAMERA_METADATA_KEYS)
+        if unknown:
+            raise ValueError(f"Unknown {camera} metadata fields: {sorted(unknown)}")
+        cleaned[camera] = {}
+        for field, kind in CAMERA_METADATA_KEYS.items():
+            item = details.get(field)
+            name = f"{camera} {field}"
+            if item is None:
+                pass
+            elif kind == "text":
+                if not isinstance(item, str):
+                    raise ValueError(f"{name} must be text or None")
+            elif kind in ("pixels", "count"):
+                # bool is a kind of int in Python, so it is refused explicitly.
+                if type(item) is not int or item < (1 if kind == "pixels" else 0):
+                    raise ValueError(f"{name} must be a whole number"
+                                     + (" above 0" if kind == "pixels" else ", 0 or more"))
+            elif kind == "measure":
+                if type(item) not in (int, float) or not math.isfinite(item) or item < 0:
+                    raise ValueError(f"{name} must be a finite number, 0 or more")
+            cleaned[camera][field] = item
+    return json.dumps(cleaned)
+
+
 # record key -> (database column, check). JSON fields get a _json column.
 _CAPTURE_FIELDS = {
     "session_id": ("session_id", _int_or_none),
@@ -668,6 +756,8 @@ _CAPTURE_FIELDS = {
     "detections": ("detections_json", _json_or_none),
     "pinned": ("pinned", _flag),
     "images_deleted_at": ("images_deleted_at", _text_or_none),
+    "purpose": ("purpose", _choice(("shot", "camera_test"))),
+    "camera_metadata": ("camera_metadata_json", _camera_metadata),
 }
 
 
@@ -1824,6 +1914,8 @@ def _capture_dict(row):
         "detections": loaded("detections_json"),
         "pinned": bool(row["pinned"]),
         "images_deleted_at": row["images_deleted_at"],
+        "purpose": row["purpose"],  # "shot" or "camera_test"
+        "camera_metadata": loaded("camera_metadata_json"),  # None if not recorded
     }
 
 
