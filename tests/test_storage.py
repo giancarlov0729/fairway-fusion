@@ -961,7 +961,19 @@ def test_capture_shot_cannot_move_to_a_new_session(store, explicit_session):
     assert store.list_shots() == []
     assert store.get_capture(_capture_id(1))["session_id"] == first["id"]
 
-
+@pytest.mark.parametrize(
+    "capture_source, shot_source",
+    [("live", "simulation"), ("simulation", "live"), ("replay", "live")],
+)
+def test_shot_source_must_match_its_capture(store, capture_source, shot_source):
+    """Real and simulated data can never mix: a shot must carry the same
+    source as the capture it came from, and a mismatch saves nothing."""
+    store.start_session()
+    store.create_capture(_ethan_record() | {"source": capture_source})
+    with pytest.raises(ValueError, match="does not match capture source"):
+        store.save_shot(50.0, 15.0, capture_id=_capture_id(1), source=shot_source)
+    assert store.latest_shot() is None
+    
 def test_second_shot_for_same_capture_is_refused(store):
     """Duplicate prevention: one capture produces at most one shot, so a
     retried save is refused and history keeps exactly one copy."""
