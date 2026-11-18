@@ -1182,3 +1182,98 @@ def test_cleanup_refuses_bad_limits(store, kwargs):
     """Limits must be whole numbers, 0 or more."""
     with pytest.raises(ValueError):
         store.cleanup_images(**kwargs)
+
+
+# --- Capture purpose and camera metadata ---------------------------------------
+
+
+def _camera_info(**changes):
+    """Metadata for one camera, as the capture code would record it."""
+    return {
+        "model": "imx296", "camera_id": "/base/axi/pcie@120000/rp1/i2c@88000/imx296@1a",
+        "connector": "CAM0", "width": 640, "height": 480, "pixel_format": "YUV420",
+        "exposure_us": 998, "analogue_gain": 2.0, "sensor_timestamp_ns": 1234567890,
+    } | changes
+
+
+def test_captures_default_to_shot_purpose_and_no_camera_metadata(store):
+    """Existing callers that never mention the new fields get a normal shot
+    capture with no camera metadata, so nothing about them changes."""
+    saved = store.create_capture(_ethan_record())
+    assert saved["purpose"] == "shot"
+    assert saved["camera_metadata"] is None
+
+
+def test_camera_metadata_round_trips(store):
+    """Both cameras' recorded details come back exactly as saved."""
+    metadata = {"camera_a": _camera_info(),
+                "camera_b": _camera_info(connector="CAM1", exposure_us=1003)}
+    store.create_capture(_ethan_record() | {"purpose": "camera_test",
+                                            "camera_metadata": metadata})
+    saved = store.get_capture(_capture_id(1))
+    assert saved["purpose"] == "camera_test"
+    assert saved["camera_metadata"] == metadata
+
+
+def test_missing_camera_metadata_is_explicitly_unknown(store):
+    """Details that were not recorded come back as None (unknown), never as a
+    guessed value, and a camera that captured nothing is None as a whole."""
+    store.create_capture(_ethan_record() | {"camera_metadata": {
+        "camera_a": {"connector": "CAM0", "width": 640, "height": 480},
+    }})
+    metadata = store.get_capture(_capture_id(1))["camera_metadata"]
+    assert metadata["camera_b"] is None  # camera B recorded nothing
+    assert metadata["camera_a"]["width"] == 640
+    assert metadata["camera_a"]["exposure_us"] is None  # not recorded
+    assert metadata["camera_a"]["model"] is None
+    assert set(metadata["camera_a"]) == set(_camera_info())  # every key present
+
+
+def test_camera_metadata_can_be_added_later(store):
+    """Metadata can be filled in once the frames arrive, after the record
+    was created at Arm."""
+    store.create_capture(_ethan_record())
+    updated = store.update_capture(_capture_id(1),
+                                   camera_metadata={"camera_a": _camera_info()})
+    assert updated["camera_metadata"]["camera_a"]["exposure_us"] == 998
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"purpose": "measurement"},  # not shot or camera_test
+        {"camera_metadata": "imx296"},  # not a dict
+        {"camera_metadata": {"camera_c": _camera_info()}},  # no third camera
+        {"camera_metadata": {"camera_a": _camera_info(iso=100)}},  # unknown field
+        {"camera_metadata": {"camera_a": _camera_info(width=0)}},  # zero pixels
+        {"camera_metadata": {"camera_a": _camera_info(height=480.5)}},  # fractional
+        {"camera_metadata": {"camera_a": _camera_info(width=True)}},  # bool
+        {"camera_metadata": {"camera_a": _camera_info(exposure_us=-5)}},  # negative
+        {"camera_metadata": {"camera_a": _camera_info(analogue_gain=float("nan"))}},
+        {"camera_metadata": {"camera_a": _camera_info(exposure_us="1ms")}},  # text
+        {"camera_metadata": {"camera_a": _camera_info(connector=0)}},  # not text
+        {"camera_metadata": {"camera_a": _camera_info(sensor_timestamp_ns=-1)}},
+    ],
+)
+def test_invalid_purpose_or_camera_metadata_is_refused(store, changes):
+    """Bad values are refused and nothing is saved."""
+    with pytest.raises(ValueError):
+        store.create_capture(_ethan_record() | changes)
+    assert store.list_captures() == []
+
+
+def test_old_captures_upgrade_to_shot_purpose(tmp_path):
+    """A capture saved before migration 5 comes back as a shot capture with
+    no camera metadata after the upgrade."""
+    path = tmp_path / "fairway.db"
+    store = ShotStore(path)
+    store.create_capture(_ethan_record())
+    # Undo migration 5 by hand, as if this file were made by the old code.
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE captures DROP COLUMN purpose")
+        conn.execute("ALTER TABLE captures DROP COLUMN camera_metadata_json")
+        conn.execute("PRAGMA user_version = 4")
+
+    upgraded = ShotStore(path).get_capture(_capture_id(1))
+    assert upgraded["purpose"] == "shot"
+    assert upgraded["camera_metadata"] is None
