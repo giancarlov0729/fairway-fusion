@@ -1435,6 +1435,10 @@ class ShotStore:
         with closing(self._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             capture = self._capture(conn, capture_id)
+            if capture["purpose"] == "camera_test":
+                # Refused before anything changes, so the camera test keeps
+                # its status and is never mistaken for a failed shot.
+                raise SessionStateError("Camera-test captures are not processed into shots")
             if capture["source"] != source:
                 raise SessionStateError("Capture source does not match the requested processing source")
             existing = conn.execute("SELECT * FROM shots WHERE capture_id = ?", (capture_id,)).fetchone()
