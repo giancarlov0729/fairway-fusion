@@ -52,18 +52,29 @@ def test_failed_save_has_no_success_manifest(tmp_path, monkeypatch):
     assert not (tmp_path / "clip/manifest.json").exists()
 
 
-@pytest.mark.parametrize("fail", [False, True])
-def test_headless_camera_lifecycle_and_request_release(tmp_path, monkeypatch, fail):
+@pytest.mark.parametrize("mode", ["headless", "failure", "manual"])
+def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
     cameras, requests = [], []
 
     class Request:
         released = False
 
+        def __init__(self, index, camera):
+            self.index = index
+            self.camera = camera
+
         def make_array(self, name):
-            if fail:
+            if mode == "failure":
                 raise RuntimeError("camera array failed")
             # Include stride padding to check only visible luma pixels are saved.
-            return np.zeros((720, 672), dtype=np.uint8)
+            array = np.zeros((720, 672), dtype=np.uint8)
+            if mode == "manual":
+                x = 180 + 25 * self.camera + self.index * 25
+                y = 326 - 45 * max(self.index - 4, 0)
+                cv2.circle(array, (x, y), 22, 230, -1)
+                if self.index > 4:
+                    array = cv2.blur(array, (9, 5))
+            return array
 
         def get_metadata(self):
             return {"SensorTimestamp": 123, "ExposureTime": 1000}
@@ -76,6 +87,7 @@ def test_headless_camera_lifecycle_and_request_release(tmp_path, monkeypatch, fa
 
         def __init__(self, number):
             self.number = number
+            self.capture_indices = count(1)
             cameras.append(self)
 
         def create_video_configuration(self, **kwargs):
@@ -89,7 +101,7 @@ def test_headless_camera_lifecycle_and_request_release(tmp_path, monkeypatch, fa
 
         def capture_request(self, wait):
             assert wait is False
-            request = Request()
+            request = Request(next(self.capture_indices), self.number)
             requests.append(request)
             return SimpleNamespace(get_result=lambda timeout: request)
 
@@ -102,10 +114,17 @@ def test_headless_camera_lifecycle_and_request_release(tmp_path, monkeypatch, fa
     monkeypatch.setitem(sys.modules, "picamera2", SimpleNamespace(Picamera2=Camera))
     clock = count(0, 100_000_000)
     monkeypatch.setattr("time.monotonic_ns", lambda: next(clock))
-    monkeypatch.setattr(sys, "argv", ["camera_bench", "--headless-seconds", ".01",
-                                    "--output", str(tmp_path)])
+    args = ["camera_bench", "--fps", "60", "--output", str(tmp_path)]
+    if mode == "manual":
+        keys = iter([ord("a"), -1, 32] + [-1] * 12 + [ord("q")])
+        monkeypatch.setattr(cv2, "waitKey", lambda delay: next(keys))
+        monkeypatch.setattr(cv2, "imshow", lambda name, image: None)
+        monkeypatch.setattr(cv2, "destroyAllWindows", lambda: None)
+    else:
+        args.extend(["--headless-seconds", ".01"])
+    monkeypatch.setattr(sys, "argv", args)
     script = Path(__file__).resolve().parents[1] / "scripts/camera_bench.py"
-    if fail:
+    if mode == "failure":
         with pytest.raises(RuntimeError, match="camera array failed"):
             runpy.run_path(str(script), run_name="__main__")
         assert not list(tmp_path.rglob("manifest.json"))
@@ -115,5 +134,16 @@ def test_headless_camera_lifecycle_and_request_release(tmp_path, monkeypatch, fa
         assert {frame["camera"] for frame in manifest["frames"]} == {0, 1}
         image = cv2.imread(str(next(tmp_path.rglob("*.png"))), cv2.IMREAD_GRAYSCALE)
         assert image.shape == (480, 640)
+        if mode == "manual":
+            after_trigger = [frame for frame in manifest["frames"]
+                             if frame["relative_to_manual_trigger_s"] > 0]
+            for camera in (0, 1):
+                airborne = [frame["ball_candidate"]["center"]
+                            for frame in after_trigger if frame["camera"] == camera
+                            and frame["ball_candidate"]
+                            and frame["ball_candidate"]["center"][1] < 240]
+                assert len(airborne) >= 2
+                assert airborne[1][0] > airborne[0][0]
+                assert airborne[1][1] < airborne[0][1]
     assert all(request.released for request in requests)
     assert len(cameras) == 2 and all(camera.stopped and camera.closed for camera in cameras)

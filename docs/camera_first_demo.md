@@ -58,8 +58,7 @@ camera/cable individually, then the vendor configuration for each Pi connector.
 
 ## Real dual preview, detection and a short chip
 
-From the repo root in a Pi desktop terminal, start the preview with the tested
-turf setup settings:
+From the repo root in a Pi desktop terminal, start the launch preview:
 
 ```bash
 ./start-cameras.sh
@@ -67,7 +66,8 @@ turf setup settings:
 
 The launcher uses `.venv-bench/bin/python` by default. Set
 `FAIRWAY_BENCH_PYTHON` to use a different environment. If you pass arguments to
-the launcher, it uses those arguments in place of the turf preset.
+the launcher, it uses those arguments in place of the launch preset. The preset
+requests 60 FPS, uses a 1 ms exposure, and searches the entire image for the ball.
 
 For a full-frame preview with explicit settings, run:
 
@@ -85,15 +85,16 @@ saved SensorTimestamp differences show the acquired cadence and gaps.
 
 1. Put the stationary ball in both views. Verify fresh images by moving a hand or ball.
 2. Press **a**. Both cameras have delivered images; the window says **SOFTWARE ARMED**.
-   This enables manual clip saving. It does not arm an external camera trigger or Pico.
+   The bench prioritizes recording at sensor cadence, with a slower preview and
+   ball detection deferred until after capture. The Pico remains separate.
 3. Wait about two seconds to fill the rolling buffer. Gently chip the ping-pong ball
    roughly 1-2 yards toward a net/soft backstop, with everyone outside the swing path.
    Only the initial travel needs to be in view; do not widen the shot to cover the
    entire landing distance at the expense of ball size.
 4. Have a teammate press **space immediately after impact**. The buffer retains recent
-   frames and adds one second afterward, then saves PNGs and `manifest.json` under
-   `data/recordings/bench/<UTC timestamp>/`. Keep the first attempt slow: roll or toss
-   the ball through the same region before trying a club.
+   frames and adds one second afterward. It analyzes the frames and saves PNGs and
+   `manifest.json` under `data/recordings/bench/<UTC timestamp>/`. Keep the first attempt
+   slow: roll or toss the ball through the same region before trying a club.
 5. Press **a** to rearm for another attempt, **d** to cancel/disarm, or **q** to exit.
    Acquisition pauses while files save. Quit/disarm during recording discards that
    pending clip. A save failure exits with an error; no manifest means an incomplete save.
@@ -127,6 +128,11 @@ image. At 60 FPS it travels about 50 mm per frame. That is plausible for showing
 gentle ball departure, given enough light. It does not guarantee the club-contact
 instant is sampled. At that speed, crossing 0.3 m takes 0.1 s, about six frames at
 60 FPS. Recheck the actual cadence in saved metadata.
+
+At 50 m/s, the ball travels about 0.83 m between 60 FPS frames. The bench's
+0.3–0.5 m field can miss an entire airborne pass at that speed. The launch metrics
+pipeline requires calibrated stereo images of two timed flashes. The free-running
+bench records candidate positions and per-camera timestamps for detection checks.
 
 If motion blurs, try `--exposure-us 500` and more light. If dark, improve illumination
 or aperture first; extra gain increases noise. For stationary focusing only, use

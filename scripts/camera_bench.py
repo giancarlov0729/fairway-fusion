@@ -42,6 +42,38 @@ def detect_frame(image, roi, min_radius, max_radius, previous=None):
     return ball
 
 
+def analyze_frames(frames, regions, min_radius, max_radius, previous_frames):
+    for frame in frames:
+        frame.ball = detect_frame(frame.image, regions.get(frame.camera), min_radius,
+                                  max_radius, previous_frames.get(frame.camera))
+        previous_frames[frame.camera] = frame
+
+
+def show_preview(frames, status, previous_sensor_ns, *, detecting):
+    panels = []
+    for frame in frames:
+        panel = cv2.cvtColor(frame.image, cv2.COLOR_GRAY2BGR)
+        if frame.ball:
+            cv2.circle(panel, frame.ball["center"], frame.ball["radius"], (0, 255, 0), 2)
+        sensor_ns = frame.metadata.get("SensorTimestamp")
+        prior = previous_sensor_ns.get(frame.camera)
+        fps_text = f"{1e9 / (sensor_ns - prior):.1f} fps" if (
+            sensor_ns is not None and prior is not None and sensor_ns > prior
+        ) else "fps unknown"
+        detection_text = "DETECTION AFTER CAPTURE"
+        if detecting:
+            detection_text = "BALL CANDIDATE" if frame.ball else "NO BALL"
+        cv2.putText(panel, f"Cam {frame.camera}: {detection_text} | {fps_text}", (8, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 255, 255), 1)
+        cv2.putText(panel, f"Exposure {frame.metadata.get('ExposureTime', '?')} us", (8, 48),
+                    cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 255, 255), 1)
+        panels.append(panel)
+    view = np.hstack(panels)
+    cv2.putText(view, status + " | free-running / unsynchronized", (8, 470),
+                cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 255, 255), 2)
+    cv2.imshow("Fairway Fusion camera bench", view)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cameras", type=int, nargs=2, default=[0, 1])
@@ -78,13 +110,15 @@ def main():
 
     settings = dict(size=[640, 480], fps=args.fps, exposure_us=args.exposure_us, gain=args.gain,
                     min_radius=args.min_radius, max_radius=args.max_radius, regions=regions)
-    duration = args.headless_seconds or 3
+    headless = args.headless_seconds is not None
+    duration = args.headless_seconds or 2
     buffer = FrameBuffer(max_frames=int(2 * args.fps * (duration + 1)))
     armed = False
     trigger_ns = None
     deadline_ns = None
     previous_sensor_ns = {}
     previous_frames = {}
+    next_preview_ns = 0
     print("FREE-RUNNING cameras; no Pico control, hardware synchronization, or shot metrics.")
     print("a: software arm | space: save last ~2 s + next 1 s | d: disarm | q: quit")
     with ExitStack() as stack:
@@ -105,82 +139,69 @@ def main():
         for camera in cameras:
             camera.start()
             capture.callback(camera.stop)
-        if args.headless_seconds is None:
+        if not headless:
             stack.callback(cv2.destroyAllWindows)
-        else:
-            # The first camera can deliver a frame while the second starts.
-            # Discard the initial pair before starting the timed recording.
-            read_requests([camera.capture_request(wait=False) for camera in cameras])
-        ready_since_ns = None
+        # The first camera can deliver a frame while the second starts.
+        read_requests([camera.capture_request(wait=False) for camera in cameras])
+        ready = False
         while True:
-            panels = []
             jobs = [camera.capture_request(wait=False) for camera in cameras]
-            for number, (image, metadata) in zip(args.cameras, read_requests(jobs)):
-                frame = Frame(number, time.monotonic_ns(), image, metadata, None)
-                buffer.append(frame)
-                if args.headless_seconds is not None:
-                    continue
-                ball = detect_frame(image, regions.get(number), args.min_radius,
-                                    args.max_radius, previous_frames.get(number))
-                frame.ball = ball
-                previous_frames[number] = frame
-                panel = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-                if ball:
-                    cv2.circle(panel, ball["center"], ball["radius"], (0, 255, 0), 2)
-                sensor_ns = metadata.get("SensorTimestamp")
-                prior = previous_sensor_ns.get(number)
-                fps_text = f"{1e9 / (sensor_ns - prior):.1f} fps" if (
-                    sensor_ns is not None and prior is not None and sensor_ns > prior
-                ) else "fps unknown"
-                previous_sensor_ns[number] = sensor_ns
-                label = f"Cam {number}: {'BALL CANDIDATE' if ball else 'NO BALL'} | {fps_text}"
-                cv2.putText(panel, label, (8, 25), cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 255, 255), 1)
-                cv2.putText(panel, f"Exposure {metadata.get('ExposureTime', '?')} us", (8, 48),
-                            cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 255, 255), 1)
-                panels.append(panel)
+            frames = [
+                Frame(number, time.monotonic_ns(), image, metadata, None)
+                for number, (image, metadata) in zip(args.cameras, read_requests(jobs))
+            ]
+            if armed or headless:
+                for frame in frames:
+                    buffer.append(frame)
             now_ns = time.monotonic_ns()
-            if ready_since_ns is None:
-                ready_since_ns = now_ns
+            if not ready:
+                ready = True
                 print("READY: both cameras delivered images.")
-                if args.headless_seconds is not None:
+                if headless:
                     trigger_ns = now_ns
                     deadline_ns = now_ns + int(args.headless_seconds * 1e9)
             if deadline_ns is not None and now_ns >= deadline_ns:
                 folder = args.output / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-                if args.headless_seconds is not None:
+                if headless:
                     capture.close()
-                    # Analyze the clip after acquisition to keep up with the sensors.
-                    print(f"Analyzing {len(buffer.frames)} captured frames.", flush=True)
-                    for frame in buffer.frames:
-                        frame.ball = detect_frame(
-                            frame.image, regions.get(frame.camera), args.min_radius,
-                            args.max_radius, previous_frames.get(frame.camera),
-                        )
-                        previous_frames[frame.camera] = frame
+                # Both recording modes defer detection to protect capture cadence.
+                print(f"Analyzing {len(buffer.frames)} captured frames.", flush=True)
+                analyze_frames(buffer.frames, regions, args.min_radius, args.max_radius, {})
                 manifest = buffer.save(folder, trigger_ns=trigger_ns, settings=settings)
                 print(f"Saved {len(manifest['frames'])} frames: {folder / 'manifest.json'}")
-                armed, deadline_ns = False, None
-                if args.headless_seconds is not None:
+                if headless:
                     break
-            if args.headless_seconds is not None:
+                armed, deadline_ns = False, None
+                buffer.frames.clear()
+                previous_sensor_ns.clear()
+            if headless:
                 continue
-            status = "RECORDING" if deadline_ns else ("SOFTWARE ARMED" if armed else "READY / DISARMED")
-            view = np.hstack(panels)
-            cv2.putText(view, status + " | free-running / unsynchronized", (8, 470),
-                        cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 255, 255), 2)
-            cv2.imshow("Fairway Fusion camera bench", view)
+            if not armed:
+                analyze_frames(frames, regions, args.min_radius, args.max_radius, previous_frames)
+                show_preview(frames, "READY / DISARMED", previous_sensor_ns, detecting=True)
+            elif now_ns >= next_preview_ns:
+                # Refresh the display occasionally and keep acquiring between refreshes.
+                status = "RECORDING" if deadline_ns is not None else "SOFTWARE ARMED"
+                show_preview(frames, status, previous_sensor_ns, detecting=False)
+                next_preview_ns = now_ns + 100_000_000
+            previous_sensor_ns = {
+                frame.camera: frame.metadata.get("SensorTimestamp") for frame in frames
+            }
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
-            if key == ord("a") and deadline_ns is None:
+            if key == ord("a") and not armed:
                 armed = True
+                previous_frames.clear()
+                next_preview_ns = 0
                 print("SOFTWARE ARMED: manual clip saving enabled; Pico is not armed.")
             elif key == ord("d"):
                 armed, deadline_ns = False, None
+                buffer.frames.clear()
                 print("Software disarmed; pending clip cancelled.")
             elif key == 32 and armed and deadline_ns is None:
                 trigger_ns = time.monotonic_ns()
-                deadline_ns = trigger_ns + int(1e9)
+                deadline_ns = trigger_ns + 1_000_000_000
 
 
 if __name__ == "__main__":

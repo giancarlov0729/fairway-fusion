@@ -9,10 +9,8 @@ if [ ! -x "$bench_python" ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-    set -- --fps 30 --exposure-us 2000 --gain 4 \
-        --min-radius 24 --max-radius 44 \
-        --roi 0 0 262 640 140 \
-        --roi 1 0 252 640 140
+    set -- --fps 60 --exposure-us 1000 --gain 8 \
+        --min-radius 12 --max-radius 48
 fi
 
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
