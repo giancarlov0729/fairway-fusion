@@ -57,6 +57,7 @@ def test_failed_save_has_no_success_manifest(tmp_path, monkeypatch):
 def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
     cameras, requests = [], []
     preview_jobs = []
+    preview_markers = []
 
     class Request:
         released = False
@@ -124,6 +125,14 @@ def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
         monkeypatch.setattr(cv2, "imshow", lambda name, image: None)
         monkeypatch.setattr(cv2, "destroyAllWindows", lambda: None)
         monkeypatch.setattr(cv2, "setNumThreads", lambda count: None)
+        draw_circle = cv2.circle
+
+        def record_marker(image, center, radius, color, thickness):
+            if image.ndim == 3:
+                preview_markers.append(center)
+            return draw_circle(image, center, radius, color, thickness)
+
+        monkeypatch.setattr(cv2, "circle", record_marker)
     else:
         args.extend(["--headless-seconds", ".01"])
     if mode == "preview":
@@ -161,6 +170,7 @@ def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
         image = cv2.imread(str(next(tmp_path.rglob("*.png"))), cv2.IMREAD_GRAYSCALE)
         assert image.shape == (480, 640)
         if mode == "manual":
+            assert any(y < 240 for _, y in preview_markers)
             after_trigger = [frame for frame in manifest["frames"]
                              if frame["relative_to_manual_trigger_s"] > 0]
             for camera in (0, 1):

@@ -48,6 +48,13 @@ def _moving_ball(blurred, brighter, min_radius, max_radius):
     return best
 
 
+def detect_moving_ball(image, previous, min_radius, max_radius):
+    """Check consecutive monochrome views for a moving ball without a circle scan."""
+    blurred = cv2.GaussianBlur(image, (5, 5), 0)
+    brighter = cv2.subtract(blurred, cv2.GaussianBlur(previous, (5, 5), 0))
+    return _moving_ball(blurred, brighter, min_radius, max_radius)
+
+
 def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=None):
     """Return the best supported bright, filled circle in the radius range.
 

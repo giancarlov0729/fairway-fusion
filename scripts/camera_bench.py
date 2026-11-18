@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
-from fairway_fusion.detection.ball_detector import detect_ball
+from fairway_fusion.detection.ball_detector import detect_ball, detect_moving_ball
 
 
 def read_requests(jobs):
@@ -27,7 +27,8 @@ def read_requests(jobs):
                 for request in requests]
 
 
-def detect_frame(image, roi, min_radius, max_radius, previous=None, *, motion_reference=None):
+def detect_frame(image, roi, min_radius, max_radius, previous=None, *,
+                 motion_reference=None, motion_only=False):
     x, y, width, height = roi or (0, 0, image.shape[1], image.shape[0])
     region = np.s_[y:y + height, x:x + width]
     prior = None
@@ -36,10 +37,13 @@ def detect_frame(image, roi, min_radius, max_radius, previous=None, *, motion_re
         prior = (previous_x - x, previous_y - y, previous.ball["radius"])
     if motion_reference is None and previous is not None:
         motion_reference = previous.image
-    ball = detect_ball(
-        image[region], min_radius, max_radius,
-        previous=motion_reference[region] if motion_reference is not None else None, prior=prior,
-    )
+    reference = motion_reference[region] if motion_reference is not None else None
+    if motion_only:
+        if reference is None:
+            return None
+        ball = detect_moving_ball(image[region], reference, min_radius, max_radius)
+    else:
+        ball = detect_ball(image[region], min_radius, max_radius, previous=reference, prior=prior)
     if ball:
         local_x, local_y = ball["center"]
         ball["center"] = (local_x + x, local_y + y)
@@ -67,7 +71,7 @@ def analyze_preview(frames, regions, min_radius, max_radius, history_by_camera):
 
 
 def current_preview_ball(frame, detection):
-    if detection is None or not detection.ball or frame.host_ns - detection.host_ns > 750_000_000:
+    if detection is None or not detection.ball:
         return None
     ball = detection.ball
     x, y = ball["center"]
@@ -81,7 +85,7 @@ def current_preview_ball(frame, detection):
     return None
 
 
-def show_preview(frames, status, sensor_timestamps, *, detections):
+def show_preview(frames, status, sensor_timestamps, *, detections, motion_detections):
     panels = []
     for frame in frames:
         panel = cv2.cvtColor(frame.image, cv2.COLOR_GRAY2BGR)
@@ -90,12 +94,11 @@ def show_preview(frames, status, sensor_timestamps, *, detections):
         if len(timestamps) >= 2 and timestamps[-1] > timestamps[0]:
             fps = 1e9 * (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
             fps_text = f"{fps:.1f} capture fps"
-        detection_text = "DETECTION AFTER CAPTURE"
-        if detections is not None:
-            ball = current_preview_ball(frame, detections.get(frame.camera))
-            detection_text = "BALL CANDIDATE" if ball else "SEARCHING"
-            if ball:
-                cv2.circle(panel, ball["center"], ball["radius"], (0, 255, 0), 2)
+        ball = (current_preview_ball(frame, motion_detections.get(frame.camera))
+                or current_preview_ball(frame, detections.get(frame.camera)))
+        detection_text = "BALL CANDIDATE" if ball else "SEARCHING"
+        if ball:
+            cv2.circle(panel, ball["center"], ball["radius"], (0, 255, 0), 2)
         cv2.putText(panel, f"Cam {frame.camera}: {detection_text} | {fps_text}", (8, 25),
                     cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 255, 255), 1)
         cv2.putText(panel, f"Exposure {frame.metadata.get('ExposureTime', '?')} us", (8, 48),
@@ -153,7 +156,8 @@ def main():
     preview_history = {}
     preview_results = {}
     preview_job = None
-    preview_reset_ns = 0
+    motion_history = deque(maxlen=4)
+    motion_results = {}
     next_preview_ns = 0
     print("FREE-RUNNING cameras; no Pico control, hardware synchronization, or shot metrics.")
     print("a: software arm | space: save last ~2 s + next 1 s | d: disarm | q: quit")
@@ -218,9 +222,7 @@ def main():
             if headless:
                 continue
             if preview_job is not None and preview_job.done():
-                results = preview_job.result()
-                if not armed and all(result.host_ns >= preview_reset_ns for result in results.values()):
-                    preview_results = results
+                preview_results = preview_job.result()
                 preview_job = None
             if not armed and preview_job is None:
                 # One in-flight sample at a time. The camera loop never waits
@@ -232,12 +234,23 @@ def main():
                 sensor_ns = frame.metadata.get("SensorTimestamp")
                 if sensor_ns is not None:
                     sensor_timestamps[frame.camera].append(sensor_ns)
+            motion_history.append(frames)
             if now_ns >= next_preview_ns:
+                if len(motion_history) > 1:
+                    for frame, reference in zip(frames, motion_history[0]):
+                        ball = detect_frame(
+                            frame.image, regions.get(frame.camera), args.min_radius, args.max_radius,
+                            motion_reference=reference.image, motion_only=True,
+                        )
+                        if ball:
+                            motion_results[frame.camera] = Frame(
+                                frame.camera, frame.host_ns, frame.image, frame.metadata, ball,
+                            )
                 status = "RECORDING" if deadline_ns is not None else (
                     "SOFTWARE ARMED" if armed else "READY / DISARMED"
                 )
                 show_preview(frames, status, sensor_timestamps,
-                             detections=None if armed else preview_results)
+                             detections=preview_results, motion_detections=motion_results)
                 next_preview_ns += 33_333_333
                 if next_preview_ns <= now_ns:
                     next_preview_ns = now_ns + 33_333_333
@@ -247,8 +260,6 @@ def main():
             if key == ord("a") and not armed:
                 armed = True
                 preview_history = {}
-                preview_results = {}
-                preview_reset_ns = now_ns
                 next_preview_ns = 0
                 print("SOFTWARE ARMED: manual clip saving enabled; Pico is not armed.")
             elif key == ord("d"):

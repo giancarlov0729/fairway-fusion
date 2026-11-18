@@ -77,8 +77,9 @@ python scripts/camera_bench.py --fps 60 --exposure-us 1000 --gain 2
 
 The program shows actual monochrome images side by side, candidate ball outlines,
 sensor-timestamp capture cadence and reported exposure. The display refreshes at
-up to 30 FPS while the cameras continue acquiring. The live detector samples
-frames independently, so the outline can update more slowly than the video.
+up to 30 FPS while the cameras continue acquiring. The preview checks recent
+frames for motion to mark a moving ball while disarmed or armed. While disarmed
+it also samples frames in the background to find a stationary ball.
 Detection can mistake other round objects for balls and can miss blurred, dim or
 partially hidden balls. Inspect the image as well as the outline.
 The 640x480 luma output keeps memory and processing modest; it is not raw sensor data.
@@ -87,8 +88,8 @@ saved SensorTimestamp differences show the acquired cadence and gaps.
 
 1. Put the stationary ball in both views. Verify fresh images by moving a hand or ball.
 2. Press **a**. Both cameras have delivered images; the window says **SOFTWARE ARMED**.
-   The bench prioritizes recording at sensor cadence and defers ball detection
-   until after capture. The Pico remains separate.
+   Full detection on the recorded frames runs after capture. The lightweight
+   live motion overlay remains visible while armed. The Pico remains separate.
 3. Wait about two seconds to fill the rolling buffer. Gently chip the ping-pong ball
    roughly 1-2 yards toward a net/soft backstop, with everyone outside the swing path.
    Only the initial travel needs to be in view; do not widen the shot to cover the
