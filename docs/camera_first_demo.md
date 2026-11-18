@@ -81,6 +81,8 @@ up to 30 FPS while the cameras continue acquiring. The preview checks recent
 frames for motion and looks for the last detected ball on each new view. It uses
 an independent stationary search when it needs to reacquire a ball. This works
 while disarmed or armed, with broad searches paused during active recording.
+The capture loop does not wait for the tracker. The preview draws each outline
+on the frame that was analyzed, so the displayed video can lag slightly.
 Detection can mistake other round objects for balls and can miss blurred, dim or
 partially hidden balls. Inspect the image as well as the outline.
 The 640x480 luma output keeps memory and processing modest; it is not raw sensor data.

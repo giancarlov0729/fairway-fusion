@@ -109,6 +109,24 @@ def preview_ball(frame, reference, roi, min_radius, max_radius, prior, detection
     return moving
 
 
+def track_preview(frames, references, older_references, regions, min_radius, max_radius,
+                  tracks, detections):
+    balls = {}
+    for frame, reference, older in zip(frames, references, older_references):
+        prior, seen_ns = tracks.get(frame.camera, (None, 0))
+        if frame.host_ns - seen_ns > 120_000_000:
+            prior = None
+        ball = preview_ball(
+            frame, reference if reference is not frame else None,
+            regions.get(frame.camera), min_radius, max_radius,
+            prior, detections.get(frame.camera),
+            older_reference=older if older is not frame else None,
+        )
+        if ball:
+            balls[frame.camera] = ball
+    return frames, balls
+
+
 def show_preview(frames, status, sensor_timestamps, balls):
     panels = []
     for frame in frames:
@@ -178,6 +196,8 @@ def main():
     sensor_timestamps = {number: deque(maxlen=31) for number in args.cameras}
     preview_results = {}
     preview_job = None
+    tracking_job = None
+    tracked_frames = []
     motion_history = deque(maxlen=7)
     preview_balls = {}
     preview_tracks = {}
@@ -189,6 +209,7 @@ def main():
             # Leave CPU for libcamera and the GUI while OpenCV scans a preview.
             cv2.setNumThreads(2)
             preview_worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
+            tracking_worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
         cameras = []
         for number in args.cameras:
             camera = Picamera2(number)
@@ -247,6 +268,12 @@ def main():
             if preview_job is not None and preview_job.done():
                 preview_results = preview_job.result()
                 preview_job = None
+            if tracking_job is not None and tracking_job.done():
+                tracked_frames, preview_balls = tracking_job.result()
+                for frame in tracked_frames:
+                    if frame.camera in preview_balls:
+                        preview_tracks[frame.camera] = (preview_balls[frame.camera], frame.host_ns)
+                tracking_job = None
             motion_history.append(frames)
             if (len(motion_history) == motion_history.maxlen and preview_job is None
                     and deadline_ns is None and len(preview_balls) < len(frames)):
@@ -261,27 +288,20 @@ def main():
                 if sensor_ns is not None:
                     sensor_timestamps[frame.camera].append(sensor_ns)
             if now_ns >= next_preview_ns:
-                references = motion_history[-min(4, len(motion_history))]
-                older_references = motion_history[0]
-                verified_balls = {}
-                for frame, reference, older in zip(frames, references, older_references):
-                    prior, seen_ns = preview_tracks.get(frame.camera, (None, 0))
-                    if now_ns - seen_ns > 120_000_000:
-                        prior = None
-                    ball = preview_ball(
-                        frame, reference if reference is not frame else None,
-                        regions.get(frame.camera), args.min_radius, args.max_radius,
-                        prior, preview_results.get(frame.camera),
-                        older_reference=older if older is not frame else None,
+                if tracking_job is None:
+                    tracking_job = tracking_worker.submit(
+                        track_preview, frames, motion_history[-min(4, len(motion_history))],
+                        motion_history[0], regions, args.min_radius, args.max_radius,
+                        preview_tracks.copy(), preview_results,
                     )
-                    if ball:
-                        verified_balls[frame.camera] = ball
-                        preview_tracks[frame.camera] = (ball, now_ns)
-                preview_balls = verified_balls
                 status = "RECORDING" if deadline_ns is not None else (
                     "SOFTWARE ARMED" if armed else "READY / DISARMED"
                 )
-                show_preview(frames, status, sensor_timestamps, preview_balls)
+                # Apply each circle to the same image the tracker analyzed.
+                if tracked_frames and now_ns - tracked_frames[0].host_ns <= 120_000_000:
+                    show_preview(tracked_frames, status, sensor_timestamps, preview_balls)
+                else:
+                    show_preview(frames, status, sensor_timestamps, {})
                 next_preview_ns += 33_333_333
                 if next_preview_ns <= now_ns:
                     next_preview_ns = now_ns + 33_333_333

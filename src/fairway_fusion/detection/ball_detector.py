@@ -64,8 +64,8 @@ def detect_moving_ball(image, previous, min_radius, max_radius, *, mixed_contras
 
 @lru_cache(maxsize=64)
 def _ball_template(radius):
-    half = int(np.ceil(1.25 * radius))
-    coords = np.arange(-half, half + 1)
+    half = int(np.ceil(1.25 * radius / 2)) * 2
+    coords = np.arange(-half, half + 1, 2)
     distance = np.hypot(coords[:, None], coords)
     # The annulus supplies local contrast without encoding the scene behind it.
     template = np.zeros(distance.shape, dtype=np.float32)
@@ -97,18 +97,20 @@ def _match_ball_radius(image, prior, radius):
     reach = max(25, 3 * prior["radius"])
     left, right = max(0, x - reach - half), min(width, x + reach + half + 1)
     top, bottom = max(0, y - reach - half), min(height, y + reach + half + 1)
-    if right - left < template.shape[1] or bottom - top < template.shape[0]:
+    if right - left <= 2 * half or bottom - top <= 2 * half:
         return 0, None
     blurred = cv2.GaussianBlur(image[top:bottom, left:right], (5, 5), 0)
-    scores = cv2.matchTemplate(blurred.astype(np.float32), template, cv2.TM_CCOEFF_NORMED)
-    dx = (np.arange(scores.shape[1]) + left + half - x) / reach
-    dy = (np.arange(scores.shape[0]) + top + half - y) / reach
+    # Search at half resolution, then check the candidate's rim on the native image.
+    search = blurred[::2, ::2].astype(np.float32)
+    scores = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
+    dx = (2 * np.arange(scores.shape[1]) + left + half - x) / reach
+    dy = (2 * np.arange(scores.shape[0]) + top + half - y) / reach
     scores -= 0.12 * (dx[None, :]**2 + dy[:, None]**2)
     _, score, _, (peak_x, peak_y) = cv2.minMaxLoc(scores)
     if score < 0.34:
         return 0, None
 
-    cx, cy = peak_x + half, peak_y + half
+    cx, cy = 2 * peak_x + half, 2 * peak_y + half
 
     def ring(scale):
         xx = np.rint(cx + radius * scale * _RING_X).astype(int)

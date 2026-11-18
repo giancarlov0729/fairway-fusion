@@ -115,11 +115,11 @@ def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
             self.closed = True
 
     monkeypatch.setitem(sys.modules, "picamera2", SimpleNamespace(Picamera2=Camera))
-    clock = count(0, 100_000_000)
+    clock = count(0, 16_000_000 if mode == "manual" else 100_000_000)
     monkeypatch.setattr("time.monotonic_ns", lambda: next(clock))
     args = ["camera_bench", "--fps", "60", "--output", str(tmp_path)]
     if mode in ("manual", "preview"):
-        keypresses = [ord("a"), -1, 32] + [-1] * 12 if mode == "manual" else [-1] * 6
+        keypresses = [ord("a"), -1, 32] + [-1] * 28 if mode == "manual" else [-1] * 6
         keys = iter(keypresses + [ord("q")])
         monkeypatch.setattr(cv2, "waitKey", lambda delay: next(keys))
         monkeypatch.setattr(cv2, "imshow", lambda name, image: None)
@@ -135,8 +135,8 @@ def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
         monkeypatch.setattr(cv2, "circle", record_marker)
     else:
         args.extend(["--headless-seconds", ".01"])
-    if mode == "preview":
-        class SlowPreviewWorker:
+    if mode in ("manual", "preview"):
+        class TestPreviewWorker:
             def __init__(self, *, max_workers):
                 assert max_workers == 1
 
@@ -146,13 +146,16 @@ def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
             def __exit__(self, *exc):
                 pass
 
-            def submit(self, *args):
-                # Never completes during the test. Capture must keep going
-                # without waiting for this future or queuing any other work.
-                preview_jobs.append(concurrent.futures.Future())
-                return preview_jobs[-1]
+            def submit(self, process, *args):
+                result = concurrent.futures.Future()
+                if mode == "manual":
+                    result.set_result(process(*args))
+                # In preview mode neither worker completes. Capture must keep
+                # going without waiting or queuing more than one job per worker.
+                preview_jobs.append(result)
+                return result
 
-        monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", SlowPreviewWorker)
+        monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", TestPreviewWorker)
     monkeypatch.setattr(sys, "argv", args)
     script = Path(__file__).resolve().parents[1] / "scripts/camera_bench.py"
     if mode == "failure":
@@ -161,7 +164,7 @@ def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
         assert not list(tmp_path.rglob("manifest.json"))
     elif mode == "preview":
         runpy.run_path(str(script), run_name="__main__")
-        assert len(preview_jobs) == 1
+        assert len(preview_jobs) == 2
         assert len(requests) == 16  # Startup pair plus seven preview pairs.
     else:
         runpy.run_path(str(script), run_name="__main__")
