@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import pytest
 
 from fairway_fusion.detection.ball_detector import detect_ball
 
@@ -129,3 +130,20 @@ def test_prior_position_requires_evidence_in_current_frame(monkeypatch):
     assert detect_ball(frame, max_radius=35) is None
     assert detect_ball(frame, max_radius=35, prior=prior)["center"] == (120, 56)
     assert detect_ball(table, max_radius=35, prior=prior) is None
+
+
+def test_airborne_ball_can_be_proposed_from_its_new_silhouette(monkeypatch):
+    scene = np.full((180, 240), 115, dtype=np.uint8)
+    cv2.circle(scene, (177, 70), 30, 200, -1)
+    previous = scene.copy()
+    cv2.circle(previous, (78, 39), 17, 160, -1)
+    frame = scene.copy()
+    cv2.circle(frame, (86, 94), 17, 160, -1)
+
+    def unexpected_hough(*args, **kwargs):
+        pytest.fail("A clean moving silhouette should not need a full-frame circle search.")
+
+    monkeypatch.setattr(cv2, "HoughCircles", unexpected_hough)
+    ball = detect_ball(frame, 12, 40, previous=previous, prior=(78, 39, 17))
+    assert ball is not None
+    assert np.linalg.norm(np.array(ball["center"]) - (86, 94)) <= 2

@@ -7,6 +7,47 @@ _RING_X = np.cos(_ANGLES)
 _RING_Y = np.sin(_ANGLES)
 
 
+def _moving_ball(blurred, brighter, min_radius, max_radius):
+    """Find a filled circle that has just appeared at a new position."""
+    _, mask = cv2.threshold(brighter, 18, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    height, width = blurred.shape
+    best_score = 0
+    best = None
+    for contour in contours:
+        (x, y), radius = cv2.minEnclosingCircle(contour)
+        if not min_radius <= radius <= max_radius:
+            continue
+        if min(x - radius, y - radius, width - 1 - x - radius, height - 1 - y - radius) < 0:
+            continue
+        occupancy = cv2.contourArea(contour) / (np.pi * radius**2)
+        if occupancy < 0.62:
+            continue
+
+        def ring(scale, image):
+            xx = np.clip(np.rint(x + radius * scale * _RING_X).astype(int), 0, width - 1)
+            yy = np.clip(np.rint(y + radius * scale * _RING_Y).astype(int), 0, height - 1)
+            return image[yy, xx].astype(np.int16)
+
+        # Change alone also finds moving hands and lighting. Require evidence of
+        # a brighter, filled disk on the current frame before accepting it.
+        outside = ring(1.12, blurred)
+        support = float(np.mean(ring(0.82, blurred) - outside >= 10))
+        if support < 0.50:
+            continue
+        core = np.concatenate([ring(scale, blurred) for scale in (0.2, 0.4, 0.6)])
+        if np.mean(core > np.percentile(outside, 35) + 15) < 0.70:
+            continue
+        contrast = np.median(ring(0.75, brighter))
+        score = contrast * support * occupancy
+        if contrast >= 25 and score > best_score:
+            best_score = score
+            fitted_radius = max(min_radius, radius * np.sqrt(occupancy))
+            best = {"center": (round(x), round(y)), "radius": round(fitted_radius),
+                    "circularity": support}
+    return best
+
+
 def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=None):
     """Return the best supported bright, filled circle in the radius range.
 
@@ -18,6 +59,14 @@ def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=Non
         return None
     gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    brighter = None
+    if previous is not None:
+        previous_gray = previous if previous.ndim == 2 else cv2.cvtColor(previous, cv2.COLOR_BGR2GRAY)
+        # Positive change ignores the old location when a bright ball moves away.
+        brighter = cv2.subtract(blurred, cv2.GaussianBlur(previous_gray, (5, 5), 0))
+        moving = _moving_ball(blurred, brighter, min_radius, max_radius)
+        if moving is not None:
+            return moving
     candidates = [prior] if prior is not None else []
     _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -72,10 +121,7 @@ def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=Non
 
     # Favor stronger edges and use size to distinguish similarly supported circles.
     score = (support + 0.25 * sharpness + 0.25 * fill) * radius**0.20
-    if previous is not None:
-        previous_gray = previous if previous.ndim == 2 else cv2.cvtColor(previous, cv2.COLOR_BGR2GRAY)
-        # Positive change rejects the old location when a bright ball moves away.
-        brighter = cv2.subtract(blurred, cv2.GaussianBlur(previous_gray, (5, 5), 0))
+    if brighter is not None:
         changed = np.mean(ring(0.82, brighter) >= 15, axis=1)
         score *= 1 + changed
     index = np.argmax(np.where(valid, score, -np.inf))

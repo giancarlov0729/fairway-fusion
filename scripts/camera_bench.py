@@ -1,6 +1,7 @@
 """Two free-running Pi cameras: preview, ball candidates, and manual evidence clips."""
 
 import argparse
+from collections import deque
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,16 +26,18 @@ def read_requests(jobs):
                 for request in requests]
 
 
-def detect_frame(image, roi, min_radius, max_radius, previous=None):
+def detect_frame(image, roi, min_radius, max_radius, previous=None, *, motion_reference=None):
     x, y, width, height = roi or (0, 0, image.shape[1], image.shape[0])
     region = np.s_[y:y + height, x:x + width]
     prior = None
     if previous is not None and previous.ball:
         previous_x, previous_y = previous.ball["center"]
         prior = (previous_x - x, previous_y - y, previous.ball["radius"])
+    if motion_reference is None and previous is not None:
+        motion_reference = previous.image
     ball = detect_ball(
         image[region], min_radius, max_radius,
-        previous=previous.image[region] if previous is not None else None, prior=prior,
+        previous=motion_reference[region] if motion_reference is not None else None, prior=prior,
     )
     if ball:
         local_x, local_y = ball["center"]
@@ -42,11 +45,19 @@ def detect_frame(image, roi, min_radius, max_radius, previous=None):
     return ball
 
 
-def analyze_frames(frames, regions, min_radius, max_radius, previous_frames):
+def analyze_frames(frames, regions, min_radius, max_radius, history_by_camera):
     for frame in frames:
-        frame.ball = detect_frame(frame.image, regions.get(frame.camera), min_radius,
-                                  max_radius, previous_frames.get(frame.camera))
-        previous_frames[frame.camera] = frame
+        if frame.camera not in history_by_camera:
+            history_by_camera[frame.camera] = deque(maxlen=3)
+        history = history_by_camera[frame.camera]
+        # A ball may overlap its previous position at 60 FPS. Older footage
+        # exposes more of its silhouette without moving the last-center hint.
+        frame.ball = detect_frame(
+            frame.image, regions.get(frame.camera), min_radius, max_radius,
+            history[-1] if history else None,
+            motion_reference=history[0].image if history else None,
+        )
+        history.append(frame)
 
 
 def show_preview(frames, status, previous_sensor_ns, *, detecting):
@@ -117,7 +128,7 @@ def main():
     trigger_ns = None
     deadline_ns = None
     previous_sensor_ns = {}
-    previous_frames = {}
+    preview_history = {}
     next_preview_ns = 0
     print("FREE-RUNNING cameras; no Pico control, hardware synchronization, or shot metrics.")
     print("a: software arm | space: save last ~2 s + next 1 s | d: disarm | q: quit")
@@ -177,7 +188,7 @@ def main():
             if headless:
                 continue
             if not armed:
-                analyze_frames(frames, regions, args.min_radius, args.max_radius, previous_frames)
+                analyze_frames(frames, regions, args.min_radius, args.max_radius, preview_history)
                 show_preview(frames, "READY / DISARMED", previous_sensor_ns, detecting=True)
             elif now_ns >= next_preview_ns:
                 # Refresh the display occasionally and keep acquiring between refreshes.
@@ -192,7 +203,7 @@ def main():
                 break
             if key == ord("a") and not armed:
                 armed = True
-                previous_frames.clear()
+                preview_history.clear()
                 next_preview_ns = 0
                 print("SOFTWARE ARMED: manual clip saving enabled; Pico is not armed.")
             elif key == ord("d"):

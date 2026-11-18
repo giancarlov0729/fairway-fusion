@@ -110,8 +110,9 @@ python scripts/camera_bench.py --headless-seconds 3 --exposure-us 1000
 
 This saves one timed clip and exits; there is no interactive arming or impact trigger.
 The headless run analyzes ball candidates after capture so detection does not
-delay frame acquisition. Detection uses positive brightness changes from the
-previous frame to favor moving candidates while still allowing a stationary ball.
+delay frame acquisition. The detector looks for a fresh, round silhouette in
+recent frame differences and checks that the current image supports it. The
+single-frame search still handles stationary balls and ambiguous motion.
 The buffer is bounded by frame count (about 3 seconds at the requested preview rate;
 longer elapsed history if acquisition is slower). Requests are queued for both
 independently free-running cameras, each with a two-second result timeout. There is
