@@ -58,6 +58,19 @@ camera/cable individually, then the vendor configuration for each Pi connector.
 
 ## Real dual preview, detection and a short chip
 
+From the repo root in a Pi desktop terminal, start the preview with the tested
+turf setup settings:
+
+```bash
+./start-cameras.sh
+```
+
+The launcher uses `.venv-bench/bin/python` by default. Set
+`FAIRWAY_BENCH_PYTHON` to use a different environment. If you pass arguments to
+the launcher, it uses those arguments in place of the turf preset.
+
+For a full-frame preview with explicit settings, run:
+
 ```bash
 python scripts/camera_bench.py --fps 60 --exposure-us 1000 --gain 2
 ```
