@@ -100,3 +100,32 @@ def test_bright_table_alone_is_not_a_ball():
     image = np.zeros((480, 640, 3), dtype=np.uint8)
     cv2.rectangle(image, (0, 340), (639, 479), (220, 220, 220), -1)
     assert detect_ball(image) is None
+
+
+def test_moving_blurred_ball_wins_over_stationary_circle():
+    previous = create_test_image(center=(115, 125), radius=38)
+    cv2.circle(previous, (240, 290), 22, (220, 220, 220), -1)
+    frame = create_test_image(center=(115, 125), radius=38)
+    ball = np.zeros_like(frame)
+    cv2.circle(ball, (310, 290), 22, (220, 220, 220), -1)
+    blur = np.full((1, 15), 1 / 15, dtype=np.float32)
+    frame = cv2.add(frame, cv2.filter2D(ball, -1, blur))
+
+    result = detect_ball(frame, max_radius=50, previous=previous, prior=(240, 290, 22))
+
+    assert result is not None
+    assert np.linalg.norm(np.array(result["center"]) - (310, 290)) <= 4
+    assert abs(result["radius"] - 22) <= 4
+
+
+def test_prior_position_requires_evidence_in_current_frame(monkeypatch):
+    monkeypatch.setattr(cv2, "HoughCircles", lambda *args, **kwargs: None)
+    table = np.zeros((120, 240), dtype=np.uint8)
+    table[65:] = 200
+    frame = table.copy()
+    cv2.circle(frame, (120, 56), 20, 220, -1)
+    prior = (120, 56, 20)
+
+    assert detect_ball(frame, max_radius=35) is None
+    assert detect_ball(frame, max_radius=35, prior=prior)["center"] == (120, 56)
+    assert detect_ball(table, max_radius=35, prior=prior) is None

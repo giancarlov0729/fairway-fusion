@@ -95,6 +95,9 @@ python scripts/camera_bench.py --headless-seconds 3 --exposure-us 1000
 ```
 
 This saves one timed clip and exits; there is no interactive arming or impact trigger.
+The headless run analyzes ball candidates after capture so detection does not
+delay frame acquisition. Detection uses positive brightness changes from the
+previous frame to favor moving candidates while still allowing a stationary ball.
 The buffer is bounded by frame count (about 3 seconds at the requested preview rate;
 longer elapsed history if acquisition is slower). Requests are queued for both
 independently free-running cameras, each with a two-second result timeout. There is
@@ -116,6 +119,10 @@ If motion blurs, try `--exposure-us 500` and more light. If dark, improve illumi
 or aperture first; extra gain increases noise. For stationary focusing only, use
 `--fps 30 --exposure-us 5000`; shorten exposure again before a chip. If the detector
 misses a clear ball, adjust `--min-radius`/`--max-radius` to the visible pixel radius.
+Use `--roi CAMERA X Y WIDTH HEIGHT` to limit detection to the ball's expected
+path in a cluttered view. Repeat the option to set a region for the other camera.
+Leave enough room for the full ball throughout the visible path. Coordinates in
+the manifest refer to the full 640×480 image.
 
 ## Separate Pico arming proof with no IR board
 

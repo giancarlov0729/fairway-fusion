@@ -25,6 +25,23 @@ def read_requests(jobs):
                 for request in requests]
 
 
+def detect_frame(image, roi, min_radius, max_radius, previous=None):
+    x, y, width, height = roi or (0, 0, image.shape[1], image.shape[0])
+    region = np.s_[y:y + height, x:x + width]
+    prior = None
+    if previous is not None and previous.ball:
+        previous_x, previous_y = previous.ball["center"]
+        prior = (previous_x - x, previous_y - y, previous.ball["radius"])
+    ball = detect_ball(
+        image[region], min_radius, max_radius,
+        previous=previous.image[region] if previous is not None else None, prior=prior,
+    )
+    if ball:
+        local_x, local_y = ball["center"]
+        ball["center"] = (local_x + x, local_y + y)
+    return ball
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cameras", type=int, nargs=2, default=[0, 1])
@@ -33,6 +50,9 @@ def main():
     parser.add_argument("--gain", type=float, default=2)
     parser.add_argument("--min-radius", type=int, default=5)
     parser.add_argument("--max-radius", type=int, default=100)
+    parser.add_argument("--roi", type=int, nargs=5, action="append",
+                        metavar=("CAMERA", "X", "Y", "WIDTH", "HEIGHT"),
+                        help="Limit detection to this part of a camera's 640x480 view")
     parser.add_argument("--output", type=Path, default=Path("data/recordings/bench"))
     parser.add_argument("--headless-seconds", type=float,
                         help="Save one timed clip without a preview, then exit (maximum 5 s)")
@@ -45,18 +65,26 @@ def main():
         parser.error("Use gain 1-16 and 1 <= min-radius < max-radius <= 240")
     if args.headless_seconds is not None and not 0 < args.headless_seconds <= 5:
         parser.error("--headless-seconds must be greater than zero and at most 5")
+    regions = {}
+    for number, x, y, width, height in args.roi or ():
+        if (number not in args.cameras or number in regions or x < 0 or y < 0
+                or width <= 0 or height <= 0 or x + width > 640 or y + height > 480):
+            parser.error("Choose at most one valid 640x480 image region for each selected camera")
+        regions[number] = (x, y, width, height)
     try:
         from picamera2 import Picamera2
     except ImportError:
         parser.exit(1, "Picamera2 is required on the Pi. See docs/camera_first_demo.md.\n")
 
-    settings = dict(size=[640, 480], fps=args.fps, exposure_us=args.exposure_us, gain=args.gain)
+    settings = dict(size=[640, 480], fps=args.fps, exposure_us=args.exposure_us, gain=args.gain,
+                    min_radius=args.min_radius, max_radius=args.max_radius, regions=regions)
     duration = args.headless_seconds or 3
     buffer = FrameBuffer(max_frames=int(2 * args.fps * (duration + 1)))
     armed = False
     trigger_ns = None
     deadline_ns = None
     previous_sensor_ns = {}
+    previous_frames = {}
     print("FREE-RUNNING cameras; no Pico control, hardware synchronization, or shot metrics.")
     print("a: software arm | space: save last ~2 s + next 1 s | d: disarm | q: quit")
     with ExitStack() as stack:
@@ -72,20 +100,31 @@ def main():
             )
             camera.configure(config)
             cameras.append(camera)
+        # Stop capture before analysis even though the camera objects remain open.
+        capture = stack.enter_context(ExitStack())
         for camera in cameras:
             camera.start()
-            stack.callback(camera.stop)
+            capture.callback(camera.stop)
         if args.headless_seconds is None:
             stack.callback(cv2.destroyAllWindows)
+        else:
+            # The first camera can deliver a frame while the second starts.
+            # Discard the initial pair before starting the timed recording.
+            read_requests([camera.capture_request(wait=False) for camera in cameras])
         ready_since_ns = None
         while True:
             panels = []
             jobs = [camera.capture_request(wait=False) for camera in cameras]
             for number, (image, metadata) in zip(args.cameras, read_requests(jobs)):
-                received_ns = time.monotonic_ns()
+                frame = Frame(number, time.monotonic_ns(), image, metadata, None)
+                buffer.append(frame)
+                if args.headless_seconds is not None:
+                    continue
+                ball = detect_frame(image, regions.get(number), args.min_radius,
+                                    args.max_radius, previous_frames.get(number))
+                frame.ball = ball
+                previous_frames[number] = frame
                 panel = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-                ball = detect_ball(panel, args.min_radius, args.max_radius)
-                buffer.append(Frame(number, received_ns, image, metadata, ball))
                 if ball:
                     cv2.circle(panel, ball["center"], ball["radius"], (0, 255, 0), 2)
                 sensor_ns = metadata.get("SensorTimestamp")
@@ -108,6 +147,16 @@ def main():
                     deadline_ns = now_ns + int(args.headless_seconds * 1e9)
             if deadline_ns is not None and now_ns >= deadline_ns:
                 folder = args.output / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+                if args.headless_seconds is not None:
+                    capture.close()
+                    # Analyze the clip after acquisition to keep up with the sensors.
+                    print(f"Analyzing {len(buffer.frames)} captured frames.", flush=True)
+                    for frame in buffer.frames:
+                        frame.ball = detect_frame(
+                            frame.image, regions.get(frame.camera), args.min_radius,
+                            args.max_radius, previous_frames.get(frame.camera),
+                        )
+                        previous_frames[frame.camera] = frame
                 manifest = buffer.save(folder, trigger_ns=trigger_ns, settings=settings)
                 print(f"Saved {len(manifest['frames'])} frames: {folder / 'manifest.json'}")
                 armed, deadline_ns = False, None

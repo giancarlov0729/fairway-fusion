@@ -2,18 +2,23 @@ import cv2
 import numpy as np
 
 
-def detect_ball(frame, min_radius=5, max_radius=200):
-    """Return the largest supported bright, filled circle in the radius range.
+_ANGLES = np.linspace(0, 2 * np.pi, 96, endpoint=False)
+_RING_X = np.cos(_ANGLES)
+_RING_Y = np.sin(_ANGLES)
 
-    Edge-based proposals allow a ball to touch a bright tabletop without
-    requiring its thresholded silhouette to be an isolated contour. This is
-    a geometric bench detector, not semantic golf-ball recognition.
+
+def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=None):
+    """Return the best supported bright, filled circle in the radius range.
+
+    A recent frame from the same camera favors candidates that have moved.
+    An optional prior (x, y, radius) is checked against the current image
+    like any other proposal, so a weak rim can still support a detection.
     """
     if frame is None:
         return None
     gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    candidates = []
+    candidates = [prior] if prior is not None else []
     _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     for contour in contours:
@@ -21,46 +26,64 @@ def detect_ball(frame, min_radius=5, max_radius=200):
         if perimeter and 4 * np.pi * cv2.contourArea(contour) / perimeter**2 >= 0.75:
             (x, y), radius = cv2.minEnclosingCircle(contour)
             candidates.append((x, y, radius))
-    circles = cv2.HoughCircles(
-        cv2.GaussianBlur(gray, (9, 9), 0), cv2.HOUGH_GRADIENT, dp=1, minDist=max(8, min_radius),
-        param1=80, param2=24, minRadius=int(min_radius), maxRadius=int(max_radius),
-    )
-    if circles is not None:
-        candidates.extend(circles[0])
-
-    height, width = gray.shape
-    angles = np.linspace(0, 2 * np.pi, 96, endpoint=False)
-    directions = np.array([np.cos(angles), np.sin(angles)])
-    best = None
-    for x, y, radius in candidates:
-        if not min_radius <= radius <= max_radius:
-            continue
-        if x - radius < 0 or y - radius < 0 or x + radius >= width or y + radius >= height:
-            continue
-
-        def ring(scale):
-            points = np.array([[x], [y]]) + directions * radius * scale
-            xx = np.clip(np.rint(points[0]).astype(int), 0, width - 1)
-            yy = np.clip(np.rint(points[1]).astype(int), 0, height - 1)
-            return blurred[yy, xx].astype(float)
-
-        inside, outside = ring(0.82), ring(1.12)
-        support = float(np.mean(inside - outside >= 12))
-        # A tabletop can hide the bottom arc; most of the rim must still agree.
-        if support < 0.65:
-            continue
-        core = np.concatenate([ring(scale) for scale in (0.2, 0.4, 0.6)])
-        # Reject hollow logos/rings while allowing dark lettering on a ball.
-        background = float(np.percentile(outside, 35))
-        if np.mean(core > background + 15) < 0.70:
-            continue
-        if best is None or radius > best[0]:
-            best = (radius, x, y, support)
-    if best is None:
+    # Circle proposals recover rims that merge with the tabletop in the thresholded
+    # image. Use both gradient modes because weak or blurred rims can be incomplete.
+    for method, dp, edge_threshold, circle_threshold in (
+        (cv2.HOUGH_GRADIENT, 1, 60, 16),
+        (cv2.HOUGH_GRADIENT_ALT, 1.5, 90, 0.65),
+    ):
+        circles = cv2.HoughCircles(
+            blurred, method, dp=dp, minDist=max(8, min_radius // 2),
+            param1=edge_threshold, param2=circle_threshold,
+            minRadius=int(min_radius), maxRadius=int(max_radius),
+        )
+        if circles is not None:
+            candidates.extend(circles[0])
+    if not candidates:
         return None
-    radius, x, y, support = best
-    return {"center": (int(round(x)), int(round(y))), "radius": int(round(radius)),
-            "circularity": support}
+
+    centers = np.asarray(candidates, dtype=np.float32)
+    x, y, radius = centers.T
+    height, width = gray.shape
+    in_bounds = ((radius >= min_radius) & (radius <= max_radius)
+                 & (x - radius >= 0) & (x + radius < width)
+                 & (y - radius >= 0) & (y + radius < height))
+    x, y, radius = centers[in_bounds].T
+    if not radius.size:
+        return None
+
+    def ring(scale, image=blurred):
+        distance = radius[:, np.newaxis] * scale
+        xx = np.clip(np.rint(x[:, np.newaxis] + _RING_X * distance).astype(int), 0, width - 1)
+        yy = np.clip(np.rint(y[:, np.newaxis] + _RING_Y * distance).astype(int), 0, height - 1)
+        return image[yy, xx].astype(np.int16)
+
+    inside, outside = ring(0.82), ring(1.12)
+    support = np.mean(inside - outside >= 10, axis=1)
+    sharpness = np.mean(ring(0.93) - ring(1.07) >= 8, axis=1)
+    # The bottom arc can blend into the surface. The core still needs to be
+    # bright and filled, which rules out bright rings and hollow logos.
+    core = np.concatenate([ring(scale) for scale in (0.2, 0.4, 0.6)], axis=1)
+    background = np.percentile(outside, 35, axis=1)
+    fill = np.mean(core > background[:, np.newaxis] + 15, axis=1)
+    valid = (support >= 0.58) & (fill >= 0.70)
+    if not valid.any():
+        return None
+
+    # Favor stronger edges and use size to distinguish similarly supported circles.
+    score = (support + 0.25 * sharpness + 0.25 * fill) * radius**0.20
+    if previous is not None:
+        previous_gray = previous if previous.ndim == 2 else cv2.cvtColor(previous, cv2.COLOR_BGR2GRAY)
+        # Positive change rejects the old location when a bright ball moves away.
+        brighter = cv2.subtract(blurred, cv2.GaussianBlur(previous_gray, (5, 5), 0))
+        changed = np.mean(ring(0.82, brighter) >= 15, axis=1)
+        score *= 1 + changed
+    index = np.argmax(np.where(valid, score, -np.inf))
+    return {
+        "center": (int(round(x[index])), int(round(y[index]))),
+        "radius": int(round(radius[index])),
+        "circularity": float(support[index]),
+    }
 
 
 def detect_ball_centers(image, *, threshold=100, min_radius=5, max_radius=200):
