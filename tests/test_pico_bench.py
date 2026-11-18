@@ -8,8 +8,10 @@ import pytest
 from fairway_fusion.hardware import pico_client
 
 
-@pytest.mark.parametrize("trigger", [False, True])
-def test_logic_bench_arms_saves_terminal_report_and_disarms(tmp_path, monkeypatch, trigger):
+@pytest.mark.parametrize("mode", ["timeout", "software", "microphone"])
+def test_logic_bench_arms_saves_terminal_report_and_disarms(tmp_path, monkeypatch, mode):
+    trigger = mode == "software"
+    completed = mode != "timeout"
     commands = []
 
     class Pico:
@@ -29,7 +31,7 @@ def test_logic_bench_arms_saves_terminal_report_and_disarms(tmp_path, monkeypatc
         def capture_command(self, command, capture_id, *timing):
             commands.append(command)
             if command == "REPORT":
-                return {"capture_id": capture_id, "status": "completed" if trigger else "timed_out",
+                return {"capture_id": capture_id, "status": "completed" if completed else "timed_out",
                         "timing_source": "commanded"}
             return {"CONFIG": "CONFIGURED", "ARM": "ARMED", "TEST_TRIGGER": "TRIGGERED"}[command]
 
@@ -41,10 +43,12 @@ def test_logic_bench_arms_saves_terminal_report_and_disarms(tmp_path, monkeypatc
     arguments = ["pico_bench", "--port", "fake", "--outputs-disconnected", "--output", str(tmp_path)]
     if trigger:
         arguments.append("--test-trigger")
+    if mode == "microphone":
+        arguments.append("--microphone")
     monkeypatch.setattr(sys, "argv", arguments)
     runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/pico_bench.py"), run_name="__main__")
     assert commands[:4] == ["DISARM", "CONFIG", "ARM", "STATUS"]
     assert commands[-2:] == ["DISARM", "CLOSE"]
     assert ("TEST_TRIGGER" in commands) == trigger
     report = json.loads(next(tmp_path.rglob("report.json")).read_text())
-    assert report["status"] == ("completed" if trigger else "timed_out")
+    assert report["status"] == ("completed" if completed else "timed_out")

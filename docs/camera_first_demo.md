@@ -184,3 +184,7 @@ live images into Flask or the two-flash stereo analysis pipeline.
 Desktop tests cover bounded evidence storage, timestamp preservation, detector
 fixtures and fake camera/controller lifecycle. Physical focus, exposure, achieved
 FPS, camera enumeration and Pico outputs must be verified on the received hardware.
+
+Automatic microphone-triggered evidence clips are available in the standalone
+camera bench; see [impact recording](impact_recording.md) for controls, USB setup,
+failure behavior, and the distinction between free-running clips and synchronized shots.

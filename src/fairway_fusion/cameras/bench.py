@@ -27,9 +27,12 @@ class FrameBuffer:
     def append(self, frame):
         self.frames.append(frame)
 
-    def save(self, folder, *, trigger_ns, settings):
+    def save(self, folder, *, trigger_ns, settings, attempt=None):
         folder = Path(folder)
-        folder.mkdir(parents=True, exist_ok=False)
+        if attempt is None:
+            folder.mkdir(parents=True, exist_ok=False)
+        elif not (folder / "attempt.json").is_file() or (folder / "manifest.json").exists():
+            raise FileExistsError("Expected a reserved, unsaved capture folder")
         records = []
         for index, frame in enumerate(self.frames):
             name = f"camera{frame.camera}_{index:05d}.png"
@@ -37,8 +40,10 @@ class FrameBuffer:
                 raise OSError(f"Could not save {name}")
             records.append({
                 "camera": frame.camera, "file": name,
+                "width": frame.image.shape[1], "height": frame.image.shape[0],
                 "host_received_monotonic_ns": frame.host_ns,
-                "relative_to_manual_trigger_s": (frame.host_ns - trigger_ns) / 1e9,
+                ("relative_to_host_event_s" if attempt else "relative_to_manual_trigger_s"):
+                    (frame.host_ns - trigger_ns) / 1e9,
                 "metadata": {k: frame.metadata[k] for k in (
                     "SensorTimestamp", "ExposureTime", "AnalogueGain", "FrameDuration"
                 ) if k in frame.metadata},
@@ -50,6 +55,9 @@ class FrameBuffer:
             "timing_verified": False, "metrics": None, "requested_settings": settings,
             "frames": records,
         }
+        if attempt is not None:
+            manifest.update(attempt)
+            manifest["trigger_monotonic_ns"] = trigger_ns
         # Manifest is written last: its presence marks a successful save.
         (folder / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return manifest
