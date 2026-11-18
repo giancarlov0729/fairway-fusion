@@ -5,6 +5,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import datetime, timezone
+import math
 from pathlib import Path
 import time
 
@@ -12,7 +13,7 @@ import cv2
 import numpy as np
 
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
-from fairway_fusion.detection.ball_detector import detect_ball, detect_moving_ball
+from fairway_fusion.detection.ball_detector import detect_ball, detect_moving_ball, follow_ball
 
 
 def read_requests(jobs):
@@ -28,7 +29,8 @@ def read_requests(jobs):
 
 
 def detect_frame(image, roi, min_radius, max_radius, previous=None, *,
-                 motion_reference=None, motion_only=False):
+                 motion_reference=None, motion_only=False, mixed_contrast=False,
+                 prefer_roundness=False):
     x, y, width, height = roi or (0, 0, image.shape[1], image.shape[0])
     region = np.s_[y:y + height, x:x + width]
     prior = None
@@ -41,9 +43,11 @@ def detect_frame(image, roi, min_radius, max_radius, previous=None, *,
     if motion_only:
         if reference is None:
             return None
-        ball = detect_moving_ball(image[region], reference, min_radius, max_radius)
+        ball = detect_moving_ball(image[region], reference, min_radius, max_radius,
+                                  mixed_contrast=mixed_contrast)
     else:
-        ball = detect_ball(image[region], min_radius, max_radius, previous=reference, prior=prior)
+        ball = detect_ball(image[region], min_radius, max_radius, previous=reference, prior=prior,
+                           prefer_roundness=prefer_roundness)
     if ball:
         local_x, local_y = ball["center"]
         ball["center"] = (local_x + x, local_y + y)
@@ -65,27 +69,47 @@ def analyze_frames(frames, regions, min_radius, max_radius, history_by_camera):
         history.append(frame)
 
 
-def analyze_preview(frames, regions, min_radius, max_radius, history_by_camera):
-    analyze_frames(frames, regions, min_radius, max_radius, history_by_camera)
-    return {frame.camera: frame for frame in frames}
+def analyze_preview(samples, regions, min_radius, max_radius):
+    detections = {}
+    for first, middle, latest in zip(*samples):
+        # A short median suppresses reflections or flicker that only affected
+        # one frame. The live tracker checks each result on the current image.
+        lower = cv2.min(first.image, middle.image)
+        upper = cv2.max(first.image, middle.image)
+        image = cv2.max(lower, cv2.min(upper, latest.image))
+        detections[latest.camera] = detect_frame(
+            image, regions.get(latest.camera), min_radius, max_radius, prefer_roundness=True,
+        )
+    return detections
 
 
-def current_preview_ball(frame, detection):
-    if detection is None or not detection.ball:
-        return None
-    ball = detection.ball
-    x, y = ball["center"]
-    radius = ball["radius"]
-    region = np.s_[y - radius:y + radius + 1, x - radius:x + radius + 1]
-    current = frame.image[region]
-    # The marker belongs to a sampled frame. Hide it when that part of the
-    # live image has changed so a stale circle does not follow a moving ball.
-    if current.size and cv2.norm(current, detection.image[region], cv2.NORM_L1) / current.size <= 10:
-        return ball
-    return None
+def preview_ball(frame, reference, roi, min_radius, max_radius, prior, detection, *,
+                 older_reference=None):
+    moving = detect_frame(frame.image, roi, min_radius, max_radius,
+                          motion_reference=reference.image, motion_only=True) if reference else None
+    if moving is None and older_reference is not None and older_reference is not reference:
+        moving = detect_frame(frame.image, roi, min_radius, max_radius,
+                              motion_reference=older_reference.image, motion_only=True,
+                              mixed_contrast=True)
+    if moving and (prior is None or (
+        abs(prior["radius"] - moving["radius"]) <= 0.5 * prior["radius"]
+        and math.dist(prior["center"], moving["center"]) <= 6 * prior["radius"]
+    )):
+        return moving
+    seed = prior or detection
+    if seed:
+        x, y, width, height = roi or (0, 0, frame.image.shape[1], frame.image.shape[0])
+        px, py = seed["center"]
+        local = {**seed, "center": (px - x, py - y)}
+        tracked = follow_ball(frame.image[y:y + height, x:x + width], local, min_radius, max_radius)
+        if tracked:
+            tx, ty = tracked["center"]
+            tracked["center"] = (tx + x, ty + y)
+            return tracked
+    return moving
 
 
-def show_preview(frames, status, sensor_timestamps, *, detections, motion_detections):
+def show_preview(frames, status, sensor_timestamps, balls):
     panels = []
     for frame in frames:
         panel = cv2.cvtColor(frame.image, cv2.COLOR_GRAY2BGR)
@@ -94,8 +118,7 @@ def show_preview(frames, status, sensor_timestamps, *, detections, motion_detect
         if len(timestamps) >= 2 and timestamps[-1] > timestamps[0]:
             fps = 1e9 * (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
             fps_text = f"{fps:.1f} capture fps"
-        ball = (current_preview_ball(frame, motion_detections.get(frame.camera))
-                or current_preview_ball(frame, detections.get(frame.camera)))
+        ball = balls.get(frame.camera)
         detection_text = "BALL CANDIDATE" if ball else "SEARCHING"
         if ball:
             cv2.circle(panel, ball["center"], ball["radius"], (0, 255, 0), 2)
@@ -153,11 +176,11 @@ def main():
     trigger_ns = None
     deadline_ns = None
     sensor_timestamps = {number: deque(maxlen=31) for number in args.cameras}
-    preview_history = {}
     preview_results = {}
     preview_job = None
-    motion_history = deque(maxlen=4)
-    motion_results = {}
+    motion_history = deque(maxlen=7)
+    preview_balls = {}
+    preview_tracks = {}
     next_preview_ns = 0
     print("FREE-RUNNING cameras; no Pico control, hardware synchronization, or shot metrics.")
     print("a: software arm | space: save last ~2 s + next 1 s | d: disarm | q: quit")
@@ -224,33 +247,41 @@ def main():
             if preview_job is not None and preview_job.done():
                 preview_results = preview_job.result()
                 preview_job = None
-            if not armed and preview_job is None:
+            motion_history.append(frames)
+            if (len(motion_history) == motion_history.maxlen and preview_job is None
+                    and deadline_ns is None and len(preview_balls) < len(frames)):
                 # One in-flight sample at a time. The camera loop never waits
                 # for it or queues frames when the detector falls behind.
                 preview_job = preview_worker.submit(
-                    analyze_preview, frames, regions, args.min_radius, args.max_radius, preview_history,
+                    analyze_preview, (motion_history[0], motion_history[3], frames),
+                    regions, args.min_radius, args.max_radius,
                 )
             for frame in frames:
                 sensor_ns = frame.metadata.get("SensorTimestamp")
                 if sensor_ns is not None:
                     sensor_timestamps[frame.camera].append(sensor_ns)
-            motion_history.append(frames)
             if now_ns >= next_preview_ns:
-                if len(motion_history) > 1:
-                    for frame, reference in zip(frames, motion_history[0]):
-                        ball = detect_frame(
-                            frame.image, regions.get(frame.camera), args.min_radius, args.max_radius,
-                            motion_reference=reference.image, motion_only=True,
-                        )
-                        if ball:
-                            motion_results[frame.camera] = Frame(
-                                frame.camera, frame.host_ns, frame.image, frame.metadata, ball,
-                            )
+                references = motion_history[-min(4, len(motion_history))]
+                older_references = motion_history[0]
+                verified_balls = {}
+                for frame, reference, older in zip(frames, references, older_references):
+                    prior, seen_ns = preview_tracks.get(frame.camera, (None, 0))
+                    if now_ns - seen_ns > 120_000_000:
+                        prior = None
+                    ball = preview_ball(
+                        frame, reference if reference is not frame else None,
+                        regions.get(frame.camera), args.min_radius, args.max_radius,
+                        prior, preview_results.get(frame.camera),
+                        older_reference=older if older is not frame else None,
+                    )
+                    if ball:
+                        verified_balls[frame.camera] = ball
+                        preview_tracks[frame.camera] = (ball, now_ns)
+                preview_balls = verified_balls
                 status = "RECORDING" if deadline_ns is not None else (
                     "SOFTWARE ARMED" if armed else "READY / DISARMED"
                 )
-                show_preview(frames, status, sensor_timestamps,
-                             detections=preview_results, motion_detections=motion_results)
+                show_preview(frames, status, sensor_timestamps, preview_balls)
                 next_preview_ns += 33_333_333
                 if next_preview_ns <= now_ns:
                     next_preview_ns = now_ns + 33_333_333
@@ -259,7 +290,6 @@ def main():
                 break
             if key == ord("a") and not armed:
                 armed = True
-                preview_history = {}
                 next_preview_ns = 0
                 print("SOFTWARE ARMED: manual clip saving enabled; Pico is not armed.")
             elif key == ord("d"):

@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import pytest
 
-from fairway_fusion.detection.ball_detector import detect_ball
+from fairway_fusion.detection.ball_detector import detect_ball, follow_ball
 
 
 def create_test_image(center=(320, 240), radius=40):
@@ -147,3 +147,22 @@ def test_airborne_ball_can_be_proposed_from_its_new_silhouette(monkeypatch):
     ball = detect_ball(frame, 12, 40, previous=previous, prior=(78, 39, 17))
     assert ball is not None
     assert np.linalg.norm(np.array(ball["center"]) - (86, 94)) <= 2
+
+
+def test_nearby_ball_remains_trackable_after_brightness_and_scale_change():
+    image = np.full((200, 260), 100, dtype=np.uint8)
+    image[:, 145:] = 145
+    cv2.circle(image, (130, 92), 26, 216, -1)
+    prior = {"center": (120, 99), "radius": 22}
+
+    ball = follow_ball(image, prior, 12, 56)
+
+    assert ball is not None
+    assert np.linalg.norm(np.array(ball["center"]) - (130, 92)) <= 3
+    assert abs(ball["radius"] - 26) <= 3
+
+
+def test_nearby_search_drops_an_absent_ball():
+    image = np.full((200, 260), 100, dtype=np.uint8)
+    cv2.circle(image, (205, 92), 23, 216, -1)
+    assert follow_ball(image, {"center": (75, 95), "radius": 23}, 12, 56) is None

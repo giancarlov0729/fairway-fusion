@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 import cv2
 import numpy as np
 
@@ -7,9 +9,9 @@ _RING_X = np.cos(_ANGLES)
 _RING_Y = np.sin(_ANGLES)
 
 
-def _moving_ball(blurred, brighter, min_radius, max_radius):
+def _moving_ball(blurred, change, min_radius, max_radius, *, threshold=18):
     """Find a filled circle that has just appeared at a new position."""
-    _, mask = cv2.threshold(brighter, 18, 255, cv2.THRESH_BINARY)
+    _, mask = cv2.threshold(change, threshold, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     height, width = blurred.shape
     best_score = 0
@@ -38,7 +40,7 @@ def _moving_ball(blurred, brighter, min_radius, max_radius):
         core = np.concatenate([ring(scale, blurred) for scale in (0.2, 0.4, 0.6)])
         if np.mean(core > np.percentile(outside, 35) + 15) < 0.70:
             continue
-        contrast = np.median(ring(0.75, brighter))
+        contrast = np.median(ring(0.75, change))
         score = contrast * support * occupancy
         if contrast >= 25 and score > best_score:
             best_score = score
@@ -48,14 +50,83 @@ def _moving_ball(blurred, brighter, min_radius, max_radius):
     return best
 
 
-def detect_moving_ball(image, previous, min_radius, max_radius):
+def detect_moving_ball(image, previous, min_radius, max_radius, *, mixed_contrast=False):
     """Check consecutive monochrome views for a moving ball without a circle scan."""
     blurred = cv2.GaussianBlur(image, (5, 5), 0)
-    brighter = cv2.subtract(blurred, cv2.GaussianBlur(previous, (5, 5), 0))
-    return _moving_ball(blurred, brighter, min_radius, max_radius)
+    background = cv2.GaussianBlur(previous, (5, 5), 0)
+    if mixed_contrast:
+        # A white ball can darken one part of a bright background while
+        # brightening another. The current-frame rim and core still gate it.
+        return _moving_ball(blurred, cv2.absdiff(blurred, background), min_radius,
+                            max_radius, threshold=12)
+    return _moving_ball(blurred, cv2.subtract(blurred, background), min_radius, max_radius)
 
 
-def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=None):
+@lru_cache(maxsize=64)
+def _ball_template(radius):
+    half = int(np.ceil(1.25 * radius))
+    coords = np.arange(-half, half + 1)
+    distance = np.hypot(coords[:, None], coords)
+    # The annulus supplies local contrast without encoding the scene behind it.
+    template = np.zeros(distance.shape, dtype=np.float32)
+    template[distance <= 0.88 * radius] = 1
+    template[(distance >= radius) & (distance <= 1.25 * radius)] = -1
+    return template, half
+
+
+def follow_ball(image, prior, min_radius, max_radius):
+    """Reacquire a known ball close to its previous center in the current image."""
+    radius = prior["radius"]
+    radii = dict.fromkeys(round(radius * scale) for scale in (1, 0.85, 1.16, 1.33))
+    best = None
+    best_score = 0
+    for candidate_radius in radii:
+        if min_radius <= candidate_radius <= max_radius:
+            score, candidate = _match_ball_radius(image, prior, candidate_radius)
+            if candidate is not None and score > best_score:
+                best_score, best = score, candidate
+                if candidate_radius == radius and score >= 0.98:
+                    break
+    return best
+
+
+def _match_ball_radius(image, prior, radius):
+    x, y = prior["center"]
+    template, half = _ball_template(radius)
+    height, width = image.shape
+    reach = max(25, 3 * prior["radius"])
+    left, right = max(0, x - reach - half), min(width, x + reach + half + 1)
+    top, bottom = max(0, y - reach - half), min(height, y + reach + half + 1)
+    if right - left < template.shape[1] or bottom - top < template.shape[0]:
+        return 0, None
+    blurred = cv2.GaussianBlur(image[top:bottom, left:right], (5, 5), 0)
+    scores = cv2.matchTemplate(blurred.astype(np.float32), template, cv2.TM_CCOEFF_NORMED)
+    dx = (np.arange(scores.shape[1]) + left + half - x) / reach
+    dy = (np.arange(scores.shape[0]) + top + half - y) / reach
+    scores -= 0.12 * (dx[None, :]**2 + dy[:, None]**2)
+    _, score, _, (peak_x, peak_y) = cv2.minMaxLoc(scores)
+    if score < 0.34:
+        return 0, None
+
+    cx, cy = peak_x + half, peak_y + half
+
+    def ring(scale):
+        xx = np.rint(cx + radius * scale * _RING_X).astype(int)
+        yy = np.rint(cy + radius * scale * _RING_Y).astype(int)
+        return blurred[yy, xx].astype(np.int16)
+
+    outside = ring(1.12)
+    support = float(np.mean(ring(0.82) - outside >= 9))
+    core = np.concatenate([ring(scale) for scale in (0.2, 0.4, 0.6)])
+    if support < 0.43 or np.mean(core > np.percentile(outside, 35) + 12) < 0.65:
+        return 0, None
+    # Prefer shape and rim evidence over a small change in apparent size.
+    score += 0.20 * support - 0.12 * abs(radius - prior["radius"]) / prior["radius"]
+    return score, {"center": (left + cx, top + cy), "radius": radius, "circularity": support}
+
+
+def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=None,
+                prefer_roundness=False):
     """Return the best supported bright, filled circle in the radius range.
 
     A recent frame from the same camera favors candidates that have moved.
@@ -126,8 +197,20 @@ def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=Non
     if not valid.any():
         return None
 
-    # Favor stronger edges and use size to distinguish similarly supported circles.
-    score = (support + 0.25 * sharpness + 0.25 * fill) * radius**0.20
+    if prefer_roundness:
+        # A monitor or reflection can make a large bright proposal. Reward
+        # edges that stay near the same radius around the candidate and a
+        # bright core even in its dimmer sectors.
+        edges = np.stack([ring(scale - .04) - ring(scale + .04)
+                          for scale in np.linspace(.82, 1.18, 11)], axis=1)
+        peak = np.argmax(edges, axis=1)
+        aligned = np.mean((abs(peak - 5) <= 2) & (np.max(edges, axis=1) > 12), axis=1)
+        dim_core = np.percentile(core, 20, axis=1) / 255
+        tight_edge = np.mean(np.clip(ring(.94) - ring(1.06), 0, 55), axis=1) / 55
+        score = (2 * support + aligned + 0.8 * dim_core + 0.55 * tight_edge
+                 + 0.25 * fill + 0.3 * radius / max_radius - np.std(core, axis=1) / 300)
+    else:
+        score = (support + 0.25 * sharpness + 0.25 * fill) * radius**0.20
     if brighter is not None:
         changed = np.mean(ring(0.82, brighter) >= 15, axis=1)
         score *= 1 + changed

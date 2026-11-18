@@ -10,7 +10,7 @@ fi
 
 if [ "$#" -eq 0 ]; then
     set -- --fps 60 --exposure-us 1000 --gain 8 \
-        --min-radius 12 --max-radius 48
+        --min-radius 12 --max-radius 56
 fi
 
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"

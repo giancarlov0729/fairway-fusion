@@ -78,8 +78,9 @@ python scripts/camera_bench.py --fps 60 --exposure-us 1000 --gain 2
 The program shows actual monochrome images side by side, candidate ball outlines,
 sensor-timestamp capture cadence and reported exposure. The display refreshes at
 up to 30 FPS while the cameras continue acquiring. The preview checks recent
-frames for motion to mark a moving ball while disarmed or armed. While disarmed
-it also samples frames in the background to find a stationary ball.
+frames for motion and looks for the last detected ball on each new view. It uses
+an independent stationary search when it needs to reacquire a ball. This works
+while disarmed or armed, with broad searches paused during active recording.
 Detection can mistake other round objects for balls and can miss blurred, dim or
 partially hidden balls. Inspect the image as well as the outline.
 The 640x480 luma output keeps memory and processing modest; it is not raw sensor data.
