@@ -466,8 +466,8 @@ def test_failed_upgrade_changes_nothing(tmp_path, monkeypatch):
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     assert tables == []
-    
-    
+
+
 
 
 # --- Calibrations --------------------------------------------------------------
@@ -618,8 +618,8 @@ def test_old_database_gains_calibrations_table(tmp_path):
     store.save_calibration(_camera(0), _camera(0.2), source="real")
     assert store.latest_calibration() is not None
     assert len(store.list_shots()) == 1
-    
-    
+
+
 
 
 # --- Captures ------------------------------------------------------------------
@@ -853,7 +853,7 @@ def test_old_database_gains_captures_table(tmp_path):
     store.create_capture(_ethan_record())
     assert store.get_capture(_capture_id(1))["status"] == "preparing"
     assert len(store.list_shots()) == 1
-    
+
 
 # --- Carry and shot-to-capture links -------------------------------------------
 
@@ -973,7 +973,7 @@ def test_shot_source_must_match_its_capture(store, capture_source, shot_source):
     with pytest.raises(ValueError, match="does not match capture source"):
         store.save_shot(50.0, 15.0, capture_id=_capture_id(1), source=shot_source)
     assert store.latest_shot() is None
-    
+
 def test_second_shot_for_same_capture_is_refused(store):
     """Duplicate prevention: one capture produces at most one shot, so a
     retried save is refused and history keeps exactly one copy."""
@@ -1024,8 +1024,8 @@ def test_old_shots_upgrade_with_empty_links_and_carry(tmp_path):
     # The demo database's session is still open, so the new shot joins it.
     new = store.save_shot(50.0, 15.0, carry=_carry())
     assert new["carry"]["estimated_carry_m"] == 180.0
-    
-    
+
+
 
 # --- Listing captures, image files and cleanup ---------------------------------
 
@@ -1277,3 +1277,4 @@ def test_old_captures_upgrade_to_shot_purpose(tmp_path):
     upgraded = ShotStore(path).get_capture(_capture_id(1))
     assert upgraded["purpose"] == "shot"
     assert upgraded["camera_metadata"] is None
+    
