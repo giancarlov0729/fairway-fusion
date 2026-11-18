@@ -1207,6 +1207,9 @@ class ShotStore:
                 # real capture could produce a shot labelled "simulation" (or
                 # a simulated one a shot labelled "live"), and history would
                 # mix fake and real data without anyone noticing.
+                                # mix fake and real data without anyone noticing.
+                if capture["purpose"] == "camera_test":
+                    raise ValueError("Camera-test captures cannot produce shots")
                 if capture["source"] != source:
                     raise ValueError(
                         f"Shot source {source!r} does not match capture source "
