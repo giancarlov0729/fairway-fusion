@@ -1,3 +1,4 @@
+import concurrent.futures
 import json
 from itertools import count
 from pathlib import Path
@@ -52,9 +53,10 @@ def test_failed_save_has_no_success_manifest(tmp_path, monkeypatch):
     assert not (tmp_path / "clip/manifest.json").exists()
 
 
-@pytest.mark.parametrize("mode", ["headless", "failure", "manual"])
+@pytest.mark.parametrize("mode", ["headless", "failure", "manual", "preview"])
 def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
     cameras, requests = [], []
+    preview_jobs = []
 
     class Request:
         released = False
@@ -115,19 +117,43 @@ def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
     clock = count(0, 100_000_000)
     monkeypatch.setattr("time.monotonic_ns", lambda: next(clock))
     args = ["camera_bench", "--fps", "60", "--output", str(tmp_path)]
-    if mode == "manual":
-        keys = iter([ord("a"), -1, 32] + [-1] * 12 + [ord("q")])
+    if mode in ("manual", "preview"):
+        keypresses = [ord("a"), -1, 32] + [-1] * 12 if mode == "manual" else [-1] * 6
+        keys = iter(keypresses + [ord("q")])
         monkeypatch.setattr(cv2, "waitKey", lambda delay: next(keys))
         monkeypatch.setattr(cv2, "imshow", lambda name, image: None)
         monkeypatch.setattr(cv2, "destroyAllWindows", lambda: None)
+        monkeypatch.setattr(cv2, "setNumThreads", lambda count: None)
     else:
         args.extend(["--headless-seconds", ".01"])
+    if mode == "preview":
+        class SlowPreviewWorker:
+            def __init__(self, *, max_workers):
+                assert max_workers == 1
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                pass
+
+            def submit(self, *args):
+                # Never completes during the test. Capture must keep going
+                # without waiting for this future or queuing any other work.
+                preview_jobs.append(concurrent.futures.Future())
+                return preview_jobs[-1]
+
+        monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", SlowPreviewWorker)
     monkeypatch.setattr(sys, "argv", args)
     script = Path(__file__).resolve().parents[1] / "scripts/camera_bench.py"
     if mode == "failure":
         with pytest.raises(RuntimeError, match="camera array failed"):
             runpy.run_path(str(script), run_name="__main__")
         assert not list(tmp_path.rglob("manifest.json"))
+    elif mode == "preview":
+        runpy.run_path(str(script), run_name="__main__")
+        assert len(preview_jobs) == 1
+        assert len(requests) == 16  # Startup pair plus seven preview pairs.
     else:
         runpy.run_path(str(script), run_name="__main__")
         manifest = json.loads(next(tmp_path.rglob("manifest.json")).read_text())

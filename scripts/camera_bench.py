@@ -2,6 +2,7 @@
 
 import argparse
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,20 +61,41 @@ def analyze_frames(frames, regions, min_radius, max_radius, history_by_camera):
         history.append(frame)
 
 
-def show_preview(frames, status, previous_sensor_ns, *, detecting):
+def analyze_preview(frames, regions, min_radius, max_radius, history_by_camera):
+    analyze_frames(frames, regions, min_radius, max_radius, history_by_camera)
+    return {frame.camera: frame for frame in frames}
+
+
+def current_preview_ball(frame, detection):
+    if detection is None or not detection.ball or frame.host_ns - detection.host_ns > 750_000_000:
+        return None
+    ball = detection.ball
+    x, y = ball["center"]
+    radius = ball["radius"]
+    region = np.s_[y - radius:y + radius + 1, x - radius:x + radius + 1]
+    current = frame.image[region]
+    # The marker belongs to a sampled frame. Hide it when that part of the
+    # live image has changed so a stale circle does not follow a moving ball.
+    if current.size and cv2.norm(current, detection.image[region], cv2.NORM_L1) / current.size <= 10:
+        return ball
+    return None
+
+
+def show_preview(frames, status, sensor_timestamps, *, detections):
     panels = []
     for frame in frames:
         panel = cv2.cvtColor(frame.image, cv2.COLOR_GRAY2BGR)
-        if frame.ball:
-            cv2.circle(panel, frame.ball["center"], frame.ball["radius"], (0, 255, 0), 2)
-        sensor_ns = frame.metadata.get("SensorTimestamp")
-        prior = previous_sensor_ns.get(frame.camera)
-        fps_text = f"{1e9 / (sensor_ns - prior):.1f} fps" if (
-            sensor_ns is not None and prior is not None and sensor_ns > prior
-        ) else "fps unknown"
+        timestamps = sensor_timestamps[frame.camera]
+        fps_text = "capture fps unknown"
+        if len(timestamps) >= 2 and timestamps[-1] > timestamps[0]:
+            fps = 1e9 * (len(timestamps) - 1) / (timestamps[-1] - timestamps[0])
+            fps_text = f"{fps:.1f} capture fps"
         detection_text = "DETECTION AFTER CAPTURE"
-        if detecting:
-            detection_text = "BALL CANDIDATE" if frame.ball else "NO BALL"
+        if detections is not None:
+            ball = current_preview_ball(frame, detections.get(frame.camera))
+            detection_text = "BALL CANDIDATE" if ball else "SEARCHING"
+            if ball:
+                cv2.circle(panel, ball["center"], ball["radius"], (0, 255, 0), 2)
         cv2.putText(panel, f"Cam {frame.camera}: {detection_text} | {fps_text}", (8, 25),
                     cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 255, 255), 1)
         cv2.putText(panel, f"Exposure {frame.metadata.get('ExposureTime', '?')} us", (8, 48),
@@ -127,12 +149,19 @@ def main():
     armed = False
     trigger_ns = None
     deadline_ns = None
-    previous_sensor_ns = {}
+    sensor_timestamps = {number: deque(maxlen=31) for number in args.cameras}
     preview_history = {}
+    preview_results = {}
+    preview_job = None
+    preview_reset_ns = 0
     next_preview_ns = 0
     print("FREE-RUNNING cameras; no Pico control, hardware synchronization, or shot metrics.")
     print("a: software arm | space: save last ~2 s + next 1 s | d: disarm | q: quit")
     with ExitStack() as stack:
+        if not headless:
+            # Leave CPU for libcamera and the GUI while OpenCV scans a preview.
+            cv2.setNumThreads(2)
+            preview_worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
         cameras = []
         for number in args.cameras:
             camera = Picamera2(number)
@@ -184,26 +213,42 @@ def main():
                     break
                 armed, deadline_ns = False, None
                 buffer.frames.clear()
-                previous_sensor_ns.clear()
+                for timestamps in sensor_timestamps.values():
+                    timestamps.clear()
             if headless:
                 continue
-            if not armed:
-                analyze_frames(frames, regions, args.min_radius, args.max_radius, preview_history)
-                show_preview(frames, "READY / DISARMED", previous_sensor_ns, detecting=True)
-            elif now_ns >= next_preview_ns:
-                # Refresh the display occasionally and keep acquiring between refreshes.
-                status = "RECORDING" if deadline_ns is not None else "SOFTWARE ARMED"
-                show_preview(frames, status, previous_sensor_ns, detecting=False)
-                next_preview_ns = now_ns + 100_000_000
-            previous_sensor_ns = {
-                frame.camera: frame.metadata.get("SensorTimestamp") for frame in frames
-            }
+            if preview_job is not None and preview_job.done():
+                results = preview_job.result()
+                if not armed and all(result.host_ns >= preview_reset_ns for result in results.values()):
+                    preview_results = results
+                preview_job = None
+            if not armed and preview_job is None:
+                # One in-flight sample at a time. The camera loop never waits
+                # for it or queues frames when the detector falls behind.
+                preview_job = preview_worker.submit(
+                    analyze_preview, frames, regions, args.min_radius, args.max_radius, preview_history,
+                )
+            for frame in frames:
+                sensor_ns = frame.metadata.get("SensorTimestamp")
+                if sensor_ns is not None:
+                    sensor_timestamps[frame.camera].append(sensor_ns)
+            if now_ns >= next_preview_ns:
+                status = "RECORDING" if deadline_ns is not None else (
+                    "SOFTWARE ARMED" if armed else "READY / DISARMED"
+                )
+                show_preview(frames, status, sensor_timestamps,
+                             detections=None if armed else preview_results)
+                next_preview_ns += 33_333_333
+                if next_preview_ns <= now_ns:
+                    next_preview_ns = now_ns + 33_333_333
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
             if key == ord("a") and not armed:
                 armed = True
-                preview_history.clear()
+                preview_history = {}
+                preview_results = {}
+                preview_reset_ns = now_ns
                 next_preview_ns = 0
                 print("SOFTWARE ARMED: manual clip saving enabled; Pico is not armed.")
             elif key == ord("d"):
