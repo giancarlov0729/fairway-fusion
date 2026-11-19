@@ -184,6 +184,10 @@ cd ~/fairway-fusion-bench-ball-detection
    and leave it still for a second.
 4. Press **A**. When **PICO ARMED** appears, make a gentle chip in the calibrated
    plane within ten seconds. The microphone gate initiates a clip automatically.
+   If arming shows **WAITING FOR QUIET MICROPHONE**, stay quiet for a moment.
+   The app retries for up to three seconds. If it reports **MIC GATE BUSY**,
+   verify that the detector's GATE LED is off in quiet conditions and that its
+   conditioned signal and common ground reach the Pico as shown in the wiring guide.
    **D** cancels and **Q** quits. **T** tests the recording path while armed and
    produces an explicitly labeled test clip.
 5. Read the estimated speed and elevation in the preview or terminal. Each attempt

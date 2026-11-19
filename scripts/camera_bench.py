@@ -449,6 +449,8 @@ def main():
                     if metrics:
                         demo_status = (f"Chip: {metrics['speed_m_s']:.2f} m/s | "
                                        f"{metrics['launch_angle_deg']:.1f} deg elevation (estimated)")
+                    elif manifest.get("pico_rejection") == "GATE_NOT_QUIET":
+                        demo_status = "MIC GATE BUSY / Check sensor LED and GP7 wiring"
                     else:
                         demo_status = measurement.get("reason", "Capture " + manifest["status"])
                     print(f"{demo_status}\nSaved: {folder / 'manifest.json'}", flush=True)

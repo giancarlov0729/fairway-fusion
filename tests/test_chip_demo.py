@@ -11,6 +11,7 @@ import pytest
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
 from fairway_fusion.cameras.chip import calibrate_plane, measure_chip
 from fairway_fusion.cameras.impact import ImpactRecorder
+from fairway_fusion.hardware.pico_client import PicoRejected
 
 
 @pytest.mark.parametrize("event_source", ["pico_microphone", "pico_test_command"])
@@ -34,6 +35,7 @@ def test_chip_results_from_frames_use_sensor_time_and_require_microphone(tmp_pat
         return measure_chip(frames, 0, observed_ns, corners, .60, .30)
 
     impact = Event()
+    arm_requests = []
 
     class Pico:
         firmware = "PICO2W_CAPTURE_1"
@@ -45,6 +47,10 @@ def test_chip_results_from_frames_use_sensor_time_and_require_microphone(tmp_pat
             return "completed" if name == "STATUS" else "DISARMED"
 
         def capture_command(self, name, capture_id, *timing):
+            if name == "ARM":
+                arm_requests.append(capture_id)
+                if len(arm_requests) < 3:
+                    raise PicoRejected("GATE_NOT_QUIET")
             if name == "TEST_TRIGGER":
                 impact.set()
             if name == "REPORT":
@@ -59,10 +65,11 @@ def test_chip_results_from_frames_use_sensor_time_and_require_microphone(tmp_pat
                               client_factory=lambda port: Pico())
     assert recorder.arm()
     timeout = time.monotonic() + 2
-    while recorder.state == "ARMING" and time.monotonic() < timeout:
+    while recorder.state != "PICO ARMED" and time.monotonic() < timeout:
         recorder.tick()
         time.sleep(.01)
     assert recorder.state == "PICO ARMED"
+    assert arm_requests == [recorder.capture_id] * 3
     if event_source == "pico_microphone":
         impact.set()
     else:
@@ -83,6 +90,42 @@ def test_chip_results_from_frames_use_sensor_time_and_require_microphone(tmp_pat
         assert "launch_direction_deg" not in manifest["metrics"]
         stationary = deque(frame for frame in buffer.frames if frame.host_ns < event_ns - 70_000_000)
         assert measure_chip(stationary, 0, event_ns, corners, .60, .30)["metrics"] is None
+
+
+def test_persistently_busy_gate_preserves_rejection_and_disarms(tmp_path, monkeypatch):
+    monkeypatch.setattr("fairway_fusion.cameras.impact.GATE_SETTLE_TIMEOUT_S", .12)
+    commands = []
+
+    class Pico:
+        firmware = "PICO2W_CAPTURE_1"
+
+        def connect(self):
+            return self.firmware
+
+        def command(self, name):
+            commands.append(name)
+            return "cancelled" if name == "STATUS" else "DISARMED"
+
+        def capture_command(self, name, capture_id, *timing):
+            commands.append(name)
+            if name == "ARM":
+                raise PicoRejected("GATE_NOT_QUIET")
+
+        def close(self):
+            pass
+
+    recorder = ImpactRecorder(FrameBuffer(), tmp_path, {}, "fake", client_factory=lambda port: Pico())
+    recorder.arm()
+    recorder._thread.join(timeout=2)
+    assert not recorder._thread.is_alive()
+    _, manifest = recorder.tick()
+    assert commands.count("CONFIG") == 1
+    assert commands.count("ARM") >= 2
+    assert commands[-2:] == ["DISARM", "STATUS"]
+    assert manifest["status"] == "failed"
+    assert manifest["pico_rejection"] == "GATE_NOT_QUIET"
+    assert manifest["disarm_confirmed"]
+    assert manifest["metrics"] is None
 
 
 def test_crossed_calibration_is_rejected():

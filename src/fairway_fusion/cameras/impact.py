@@ -6,7 +6,10 @@ from threading import Event, Thread
 import time
 from uuid import uuid4
 
-from fairway_fusion.hardware.pico_client import PicoClient
+from fairway_fusion.hardware.pico_client import PicoClient, PicoRejected
+
+
+GATE_SETTLE_TIMEOUT_S = 3.0
 
 
 class ImpactRecorder:
@@ -63,9 +66,28 @@ class ImpactRecorder:
             self._cancel.set()
             self.state = "CANCELLING"
 
+    def _arm_when_quiet(self, pico, capture_id):
+        deadline = time.monotonic() + GATE_SETTLE_TIMEOUT_S
+        waiting = False
+        while not self._cancel.is_set():
+            try:
+                pico.capture_command("ARM", capture_id)
+                return True
+            except PicoRejected as exc:
+                if str(exc) != "GATE_NOT_QUIET":
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                if not waiting:
+                    self._events.put(("waiting_for_quiet", None, time.monotonic_ns()))
+                    waiting = True
+                self._cancel.wait(min(.05, remaining))
+        return False
+
     def _worker(self, capture_id):
         pico = self.client_factory(self.port)
-        outcome, error, report = "interrupted", None, None
+        outcome, error, report, rejection = "interrupted", None, None, None
         disarmed = False
         try:
             pico.connect()
@@ -74,7 +96,9 @@ class ImpactRecorder:
                 outcome = "cancelled"
                 return
             pico.capture_command("CONFIG", capture_id, 5000, 5, 1000, 500)
-            pico.capture_command("ARM", capture_id)
+            if not self._arm_when_quiet(pico, capture_id):
+                outcome = "cancelled"
+                return
             self._events.put(("armed", None, time.monotonic_ns()))
             deadline = time.monotonic() + 12
             triggered = False
@@ -96,6 +120,11 @@ class ImpactRecorder:
                 self._cancel.wait(.05)
             else:
                 raise TimeoutError("No terminal Pico report within 12 seconds")
+        except PicoRejected as exc:
+            outcome, rejection = "failed", str(exc)
+            error = rejection
+            if rejection == "GATE_NOT_QUIET":
+                error = "GATE_NOT_QUIET: microphone gate stayed busy. Check the sensor GATE LED and GP7 wiring."
         except Exception as exc:
             error = str(exc)
         finally:
@@ -111,7 +140,7 @@ class ImpactRecorder:
             finally:
                 pico.close()
             self._events.put(("terminal", {"status": outcome, "failure_reason": error,
-                              "pico_report": report, "disarm_confirmed": disarmed},
+                              "pico_rejection": rejection, "pico_report": report, "disarm_confirmed": disarmed},
                               time.monotonic_ns()))
 
     def tick(self, now_ns=None):
@@ -121,7 +150,10 @@ class ImpactRecorder:
                 kind, payload, observed_ns = self._events.get_nowait()
             except Empty:
                 break
-            if kind == "armed":
+            if kind == "waiting_for_quiet":
+                if not self._cancel.is_set():
+                    self.state = "WAITING FOR QUIET MICROPHONE"
+            elif kind == "armed":
                 if not self._cancel.is_set():
                     self.state = "PICO ARMED"
                     self._details["status"] = "armed"
