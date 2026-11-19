@@ -59,19 +59,23 @@ def analyze_frames(frames, regions, min_radius, max_radius, history_by_camera, *
                    acquire_radius=None, acquisition_regions=None):
     for frame in frames:
         if frame.camera not in history_by_camera:
-            history_by_camera[frame.camera] = deque(maxlen=3)
+            history_by_camera[frame.camera] = deque(maxlen=6 if acquire_radius is not None else 3)
         history = history_by_camera[frame.camera]
         previous = history[-1] if history else None
         roi = regions.get(frame.camera)
         if acquire_radius is not None:
-            prior = next((sample.ball for sample in reversed(history) if sample.ball), None)
+            frame.ball = None
+            recent = list(history)[-3:]
+            prior = next((sample.ball for sample in reversed(recent) if sample.ball), None)
             if prior:
                 frame.ball = preview_ball(frame, previous, roi, min_radius, max_radius, prior,
-                                          None, older_reference=history[0])
-            else:
-                acquire_roi = (acquisition_regions or {}).get(frame.camera, roi)
-                frame.ball = detect_frame(frame.image, acquire_roi, acquire_radius, max_radius,
-                                          prefer_roundness=True)
+                                          None, older_reference=recent[0])
+            elif len(history) >= 6:
+                samples = ([history[-6]], [history[-3]], [frame])
+                seed = analyze_preview(samples, regions, acquire_radius, max_radius, acquisition_regions)
+                frame.ball = preview_ball(frame, None, roi, min_radius, max_radius, None,
+                                          seed[frame.camera], acquire_radius=acquire_radius,
+                                          acquire_roi=(acquisition_regions or {}).get(frame.camera))
             history.append(frame)
             continue
         # A ball may overlap its previous position at 60 FPS. Older footage

@@ -68,7 +68,9 @@ def test_near_ball_lock_ignores_distant_object_and_follows_out_of_tee_area():
     assert abs(balls[0]["center"][0] - 225) <= 2
     assert balls[0]["radius"] < 18
 
-    bench["analyze_frames"]([parked, airborne], {}, 6, 56, {},
+    stationary = [Frame(0, i * 16_000_000, still, {}, None) for i in range(7)]
+    airborne.host_ns = 7 * 16_000_000
+    bench["analyze_frames"]([*stationary, airborne], {}, 6, 56, {},
                             acquire_radius=18, acquisition_regions=tee)
     assert airborne.ball == balls[0]
 
