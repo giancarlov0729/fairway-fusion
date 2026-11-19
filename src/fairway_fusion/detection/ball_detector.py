@@ -7,6 +7,9 @@ import numpy as np
 _ANGLES = np.linspace(0, 2 * np.pi, 96, endpoint=False)
 _RING_X = np.cos(_ANGLES)
 _RING_Y = np.sin(_ANGLES)
+_MIRROR_X = (len(_ANGLES) // 2 - np.arange(len(_ANGLES))) % len(_ANGLES)
+_TOP_ARC = _RING_Y < -0.25
+_BOTTOM_ARC = _RING_Y > 0.25
 
 
 def _moving_ball(blurred, change, min_radius, max_radius, *, threshold=18):
@@ -196,8 +199,6 @@ def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=Non
     background = np.percentile(outside, 35, axis=1)
     fill = np.mean(core > background[:, np.newaxis] + 15, axis=1)
     valid = (support >= 0.58) & (fill >= 0.70)
-    if not valid.any():
-        return None
 
     if prefer_roundness:
         # A monitor or reflection can make a large bright proposal. Reward
@@ -210,14 +211,29 @@ def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=Non
         # Hough can fit an arc across unrelated edges in clutter. For a new
         # stationary lock, require a rim at a consistent radius around the center.
         valid &= aligned >= 0.60
-        if not valid.any():
-            return None
+        # Overhead light can make the lower half of a ball darker than the
+        # turf. Accept either edge polarity when the rim stays circular and
+        # the interior is shaded from top to bottom with similar left and right sides.
+        magnitude = abs(edges)
+        strongest = np.max(magnitude, axis=1)
+        unsigned_rim = np.mean((abs(np.argmax(magnitude, axis=1) - 5) <= 2)
+                               & (strongest > 10), axis=1)
+        near_rim = np.mean(np.max(magnitude[:, 3:8], axis=1) >= 0.8 * strongest, axis=1)
+        middle = ring(0.65)
+        vertical_shading = np.mean(middle[:, _TOP_ARC], axis=1) - np.mean(middle[:, _BOTTOM_ARC], axis=1)
+        asymmetry = np.mean(abs(middle - middle[:, _MIRROR_X]), axis=1)
+        shaded_ball = ((support >= 0.45) & (fill >= 0.70) & (unsigned_rim >= 0.51)
+                       & (near_rim >= 0.76) & (vertical_shading >= 32) & (asymmetry <= 20))
+        valid |= shaded_ball
         dim_core = np.percentile(core, 20, axis=1) / 255
         tight_edge = np.mean(np.clip(ring(.94) - ring(1.06), 0, 55), axis=1) / 55
         score = (2 * support + aligned + 0.8 * dim_core + 0.55 * tight_edge
                  + 0.25 * fill + 0.6 * radius / max_radius - np.std(core, axis=1) / 300)
+        score = np.where(shaded_ball, np.maximum(score, 3 + unsigned_rim + near_rim), score)
     else:
         score = (support + 0.25 * sharpness + 0.25 * fill) * radius**0.20
+    if not valid.any():
+        return None
     if brighter is not None:
         changed = np.mean(ring(0.82, brighter) >= 15, axis=1)
         score *= 1 + changed

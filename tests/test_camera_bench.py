@@ -73,6 +73,21 @@ def test_near_ball_lock_ignores_distant_object_and_follows_out_of_tee_area():
     assert airborne.ball == balls[0]
 
 
+def test_initial_lock_accepts_ball_with_dark_lower_rim():
+    image = np.full((240, 400), 105, dtype=np.uint8)
+    center = (205, 130)
+    y, x = np.indices(image.shape)
+    ball = np.hypot(x - center[0], y - center[1]) <= 28
+    image[ball] = np.clip(145 - 4 * (y[ball] - center[1]), 0, 255)
+    cv2.circle(image, (65, 70), 11, 250, -1)
+
+    candidate = detect_ball(image, 18, 56, prefer_roundness=True)
+
+    assert candidate is not None
+    assert np.linalg.norm(np.subtract(candidate["center"], center)) <= 4
+    assert abs(candidate["radius"] - 28) <= 4
+
+
 def test_failed_save_has_no_success_manifest(tmp_path, monkeypatch):
     buffer = FrameBuffer()
     buffer.append(Frame(0, 0, np.zeros((4, 4), dtype=np.uint8), {}, None))
