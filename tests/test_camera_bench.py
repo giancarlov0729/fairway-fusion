@@ -44,6 +44,35 @@ def test_bright_ball_candidate_and_blank_background():
     assert abs(ball["center"][1] - 240) <= 1
 
 
+def test_near_ball_lock_ignores_distant_object_and_follows_out_of_tee_area():
+    bench = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/camera_bench.py"))
+    background = np.full((240, 400), 60, dtype=np.uint8)
+    cv2.rectangle(background, (240, 20), (390, 210), 130, -1)
+    cv2.line(background, (230, 200), (390, 40), 180, 3)
+    cv2.circle(background, (68, 58), 10, 250, -1)
+    empty = Frame(0, 0, background, {}, None)
+    assert bench["analyze_preview"](([empty],) * 3, {}, 18, 56)[0] is None
+
+    tee = {0: (96, 85, 108, 130)}
+    still = background.copy()
+    cv2.circle(still, (153, 151), 23, 205, -1)
+    parked = Frame(0, 16_000_000, still, {}, None)
+    seed = bench["analyze_preview"](([parked],) * 3, {}, 18, 56, tee)[0]
+    assert abs(seed["center"][0] - 153) <= 2
+
+    moving = background.copy()
+    cv2.circle(moving, (225, 107), 15, 205, -1)
+    airborne = Frame(0, 32_000_000, moving, {}, None)
+    _, balls = bench["track_preview"]([airborne], [parked], [parked], {}, 6, 56,
+                                       {0: (seed, parked.host_ns)}, {}, 18, tee)
+    assert abs(balls[0]["center"][0] - 225) <= 2
+    assert balls[0]["radius"] < 18
+
+    bench["analyze_frames"]([parked, airborne], {}, 6, 56, {},
+                            acquire_radius=18, acquisition_regions=tee)
+    assert airborne.ball == balls[0]
+
+
 def test_failed_save_has_no_success_manifest(tmp_path, monkeypatch):
     buffer = FrameBuffer()
     buffer.append(Frame(0, 0, np.zeros((4, 4), dtype=np.uint8), {}, None))

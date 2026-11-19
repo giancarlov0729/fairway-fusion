@@ -55,22 +55,35 @@ def detect_frame(image, roi, min_radius, max_radius, previous=None, *,
     return ball
 
 
-def analyze_frames(frames, regions, min_radius, max_radius, history_by_camera):
+def analyze_frames(frames, regions, min_radius, max_radius, history_by_camera, *,
+                   acquire_radius=None, acquisition_regions=None):
     for frame in frames:
         if frame.camera not in history_by_camera:
             history_by_camera[frame.camera] = deque(maxlen=3)
         history = history_by_camera[frame.camera]
+        previous = history[-1] if history else None
+        roi = regions.get(frame.camera)
+        if acquire_radius is not None:
+            prior = next((sample.ball for sample in reversed(history) if sample.ball), None)
+            if prior:
+                frame.ball = preview_ball(frame, previous, roi, min_radius, max_radius, prior,
+                                          None, older_reference=history[0])
+            else:
+                acquire_roi = (acquisition_regions or {}).get(frame.camera, roi)
+                frame.ball = detect_frame(frame.image, acquire_roi, acquire_radius, max_radius,
+                                          prefer_roundness=True)
+            history.append(frame)
+            continue
         # A ball may overlap its previous position at 60 FPS. Older footage
         # exposes more of its silhouette without moving the last-center hint.
         frame.ball = detect_frame(
-            frame.image, regions.get(frame.camera), min_radius, max_radius,
-            history[-1] if history else None,
+            frame.image, roi, min_radius, max_radius, previous,
             motion_reference=history[0].image if history else None,
         )
         history.append(frame)
 
 
-def analyze_preview(samples, regions, min_radius, max_radius):
+def analyze_preview(samples, regions, min_radius, max_radius, acquisition_regions=None):
     detections = {}
     for first, middle, latest in zip(*samples):
         # A short median suppresses reflections or flicker that only affected
@@ -79,19 +92,27 @@ def analyze_preview(samples, regions, min_radius, max_radius):
         upper = cv2.max(first.image, middle.image)
         image = cv2.max(lower, cv2.min(upper, latest.image))
         detections[latest.camera] = detect_frame(
-            image, regions.get(latest.camera), min_radius, max_radius, prefer_roundness=True,
+            image, (acquisition_regions or {}).get(latest.camera, regions.get(latest.camera)),
+            min_radius, max_radius, prefer_roundness=True,
         )
     return detections
 
 
 def preview_ball(frame, reference, roi, min_radius, max_radius, prior, detection, *,
-                 older_reference=None):
+                 older_reference=None, acquire_radius=None, acquire_roi=None):
+    acquiring = prior is None and acquire_radius is not None
+    if acquiring:
+        # Apparent size gates initial lock only; a tracked ball can shrink in flight.
+        min_radius = acquire_radius
+        roi = acquire_roi or roi
     moving = detect_frame(frame.image, roi, min_radius, max_radius,
                           motion_reference=reference.image, motion_only=True) if reference else None
     if moving is None and older_reference is not None and older_reference is not reference:
         moving = detect_frame(frame.image, roi, min_radius, max_radius,
                               motion_reference=older_reference.image, motion_only=True,
                               mixed_contrast=True)
+    if acquiring and moving and moving["circularity"] < 0.67:
+        moving = None
     if moving and (prior is None or (
         abs(prior["radius"] - moving["radius"]) <= 0.5 * prior["radius"]
         and math.dist(prior["center"], moving["center"]) <= 6 * prior["radius"]
@@ -107,21 +128,23 @@ def preview_ball(frame, reference, roi, min_radius, max_radius, prior, detection
             tx, ty = tracked["center"]
             tracked["center"] = (tx + x, ty + y)
             return tracked
-    return moving
+    return None
 
 
 def track_preview(frames, references, older_references, regions, min_radius, max_radius,
-                  tracks, detections):
+                  tracks, detections, acquire_radius=None, acquisition_regions=None):
     balls = {}
     for frame, reference, older in zip(frames, references, older_references):
         prior, seen_ns = tracks.get(frame.camera, (None, 0))
-        if frame.host_ns - seen_ns > 120_000_000:
+        if frame.host_ns - seen_ns > 200_000_000:
             prior = None
         ball = preview_ball(
             frame, reference if reference is not frame else None,
             regions.get(frame.camera), min_radius, max_radius,
             prior, detections.get(frame.camera),
             older_reference=older if older is not frame else None,
+            acquire_radius=acquire_radius,
+            acquire_roi=(acquisition_regions or {}).get(frame.camera),
         )
         if ball:
             balls[frame.camera] = ball
@@ -204,9 +227,14 @@ def main():
     parser.add_argument("--gain", type=float, default=2)
     parser.add_argument("--min-radius", type=int, default=5)
     parser.add_argument("--max-radius", type=int, default=100)
+    parser.add_argument("--acquire-min-radius", type=int,
+                        help="Minimum radius in pixels for initial lock; tracking uses --min-radius")
     parser.add_argument("--roi", type=int, nargs=5, action="append",
                         metavar=("CAMERA", "X", "Y", "WIDTH", "HEIGHT"),
                         help="Limit detection to this part of a camera's 640x480 view")
+    parser.add_argument("--acquire-roi", type=int, nargs=5, action="append",
+                        metavar=("CAMERA", "X", "Y", "WIDTH", "HEIGHT"),
+                        help="Search this tee area for initial lock, then track outside it")
     parser.add_argument("--output", type=Path, default=Path("data/recordings/bench"))
     parser.add_argument("--headless-seconds", type=float,
                         help="Save one timed clip without a preview, then exit (maximum 5 s)")
@@ -223,6 +251,8 @@ def main():
         parser.error("Use 1-60 FPS and an exposure within the requested frame period")
     if not 1 <= args.gain <= 16 or not 1 <= args.min_radius < args.max_radius <= 240:
         parser.error("Use gain 1-16 and 1 <= min-radius < max-radius <= 240")
+    if args.acquire_min_radius is not None and not args.min_radius <= args.acquire_min_radius < args.max_radius:
+        parser.error("Choose an acquisition minimum between min-radius and max-radius")
     if args.headless_seconds is not None and not 0 < args.headless_seconds <= 5:
         parser.error("--headless-seconds must be greater than zero and at most 5")
     chip_camera = args.cameras[0] if args.chip_camera is None else args.chip_camera
@@ -238,12 +268,16 @@ def main():
                 parser.error("Connect one Pico over USB or supply its serial path with --pico-port")
             args.pico_port = str(ports[0])
         from fairway_fusion.cameras.impact import ImpactRecorder
-    regions = {}
-    for number, x, y, width, height in args.roi or ():
-        if (number not in args.cameras or number in regions or x < 0 or y < 0
-                or width <= 0 or height <= 0 or x + width > 640 or y + height > 480):
-            parser.error("Choose at most one valid 640x480 image region for each selected camera")
-        regions[number] = (x, y, width, height)
+    regions, acquisition_regions = {}, {}
+    for boxes, destination in ((args.roi, regions), (args.acquire_roi, acquisition_regions)):
+        for number, x, y, width, height in boxes or ():
+            if (number not in args.cameras or number in destination or x < 0 or y < 0
+                    or width <= 0 or height <= 0 or x + width > 640 or y + height > 480):
+                parser.error("Choose at most one valid 640x480 image region per selected camera per option")
+            destination[number] = (x, y, width, height)
+    acquire_radius = args.acquire_min_radius
+    if acquire_radius is None and acquisition_regions:
+        acquire_radius = args.min_radius
     try:
         from picamera2 import Picamera2
     except ImportError:
@@ -256,7 +290,8 @@ def main():
                         "Run rpicam-hello --list-cameras to check the two sensors.\n")
 
     settings = dict(size=[640, 480], fps=args.fps, exposure_us=args.exposure_us, gain=args.gain,
-                    min_radius=args.min_radius, max_radius=args.max_radius, regions=regions)
+                    min_radius=args.min_radius, max_radius=args.max_radius, regions=regions,
+                    acquire_min_radius=acquire_radius, acquisition_regions=acquisition_regions)
     headless = args.headless_seconds is not None
     duration = args.headless_seconds or (3 if args.pico_port else 2)
     buffer = FrameBuffer(max_frames=int(2 * args.fps * (duration + 1)))
@@ -266,6 +301,7 @@ def main():
     sensor_timestamps = {number: deque(maxlen=31) for number in args.cameras}
     preview_results = {}
     preview_job = None
+    preview_job_ns = preview_result_ns = 0
     tracking_job = None
     tracked_frames = []
     motion_history = deque(maxlen=7)
@@ -285,7 +321,8 @@ def main():
         samples = [f for f in frames if f.camera == chip_camera
                    and -850_000_000 <= f.host_ns - event_ns <= 300_000_000]
         analyze_frames(samples, {chip_camera: regions.get(chip_camera, roi)},
-                       args.min_radius, args.max_radius, {})
+                       args.min_radius, args.max_radius, {}, acquire_radius=acquire_radius,
+                       acquisition_regions=acquisition_regions)
         return measure_chip(samples, chip_camera, event_ns, corners, width_m, height_m)
 
     if args.pico_port:
@@ -347,7 +384,8 @@ def main():
                     capture.close()
                 # Both recording modes defer detection to protect capture cadence.
                 print(f"Analyzing {len(buffer.frames)} captured frames.", flush=True)
-                analyze_frames(buffer.frames, regions, args.min_radius, args.max_radius, {})
+                analyze_frames(buffer.frames, regions, args.min_radius, args.max_radius, {},
+                               acquire_radius=acquire_radius, acquisition_regions=acquisition_regions)
                 manifest = buffer.save(folder, trigger_ns=trigger_ns, settings=settings)
                 print(f"Saved {len(manifest['frames'])} frames: {folder / 'manifest.json'}")
                 if headless:
@@ -377,6 +415,7 @@ def main():
                     eligible_arm_ns = time.monotonic_ns() + 1_000_000_000
             if preview_job is not None and preview_job.done():
                 preview_results = preview_job.result()
+                preview_result_ns = preview_job_ns
                 preview_job = None
             if tracking_job is not None and tracking_job.done():
                 tracked_frames, preview_balls = tracking_job.result()
@@ -391,8 +430,9 @@ def main():
                 # for it or queues frames when the detector falls behind.
                 preview_job = preview_worker.submit(
                     analyze_preview, (motion_history[0], motion_history[3], frames),
-                    regions, args.min_radius, args.max_radius,
+                    regions, acquire_radius or args.min_radius, args.max_radius, acquisition_regions,
                 )
+                preview_job_ns = now_ns
             for frame in frames:
                 sensor_ns = frame.metadata.get("SensorTimestamp")
                 if sensor_ns is not None:
@@ -402,7 +442,9 @@ def main():
                     tracking_job = tracking_worker.submit(
                         track_preview, frames, motion_history[-min(4, len(motion_history))],
                         motion_history[0], regions, args.min_radius, args.max_radius,
-                        preview_tracks.copy(), preview_results,
+                        preview_tracks.copy(),
+                        preview_results if now_ns - preview_result_ns <= 300_000_000 else {},
+                        acquire_radius, acquisition_regions,
                     )
                 status = "RECORDING" if deadline_ns is not None else (
                     "SOFTWARE ARMED" if armed else "READY / DISARMED"

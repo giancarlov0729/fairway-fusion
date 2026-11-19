@@ -207,10 +207,15 @@ def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=Non
                           for scale in np.linspace(.82, 1.18, 11)], axis=1)
         peak = np.argmax(edges, axis=1)
         aligned = np.mean((abs(peak - 5) <= 2) & (np.max(edges, axis=1) > 12), axis=1)
+        # Hough can fit an arc across unrelated edges in clutter. For a new
+        # stationary lock, require a rim at a consistent radius around the center.
+        valid &= aligned >= 0.60
+        if not valid.any():
+            return None
         dim_core = np.percentile(core, 20, axis=1) / 255
         tight_edge = np.mean(np.clip(ring(.94) - ring(1.06), 0, 55), axis=1) / 55
         score = (2 * support + aligned + 0.8 * dim_core + 0.55 * tight_edge
-                 + 0.25 * fill + 0.3 * radius / max_radius - np.std(core, axis=1) / 300)
+                 + 0.25 * fill + 0.6 * radius / max_radius - np.std(core, axis=1) / 300)
     else:
         score = (support + 0.25 * sharpness + 0.25 * fill) * radius**0.20
     if brighter is not None:

@@ -67,7 +67,13 @@ From the repo root in a Pi desktop terminal, start the launch preview:
 The launcher uses `.venv-bench/bin/python` by default. Set
 `FAIRWAY_BENCH_PYTHON` to use a different environment. If you pass arguments to
 the launcher, it uses those arguments in place of the launch preset. The preset
-requests 60 FPS, uses a 1 ms exposure, and searches the entire image for the ball.
+requests 60 FPS, uses a 1 ms exposure, and searches the entire image for initial
+lock on balls at least 18 pixels in radius. Once locked, it can follow smaller
+ball images as they move away. This uses apparent size as a distance cue.
+If a similar-sized object competes for the first lock, add
+`--acquire-roi CAMERA X Y WIDTH HEIGHT` to the chip demo command to restrict
+the initial search to the tee area in that camera's 640×480 view. Include the
+whole stationary ball and room around it. Tracking continues across the frame.
 
 For a full-frame preview with explicit settings, run:
 

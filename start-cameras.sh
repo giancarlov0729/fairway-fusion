@@ -11,10 +11,10 @@ fi
 if [ "${1:-}" = "--chip-demo" ]; then
     shift
     set -- --fps 60 --exposure-us 1000 --gain 8 \
-        --min-radius 6 --max-radius 56 --pico-port auto "$@"
+        --min-radius 6 --max-radius 56 --acquire-min-radius 18 --pico-port auto "$@"
 elif [ "$#" -eq 0 ]; then
     set -- --fps 60 --exposure-us 1000 --gain 8 \
-        --min-radius 12 --max-radius 56
+        --min-radius 12 --max-radius 56 --acquire-min-radius 18
 fi
 
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
