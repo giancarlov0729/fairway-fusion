@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
-from fairway_fusion.cameras.chip import TeeDeparture, calibrate_plane, measure_chip
+from fairway_fusion.cameras.chip import TeeDeparture, calibrate_plane, measure_chip, recover_short_chip
 from fairway_fusion.detection.ball_detector import detect_ball, detect_moving_ball, follow_ball
 
 
@@ -365,7 +365,8 @@ def main():
         analyze_frames(samples, {chip_camera: regions.get(chip_camera, roi)},
                        args.min_radius, args.max_radius, {}, acquire_radius=acquire_radius,
                        acquisition_regions=acquisition_regions)
-        return measure_chip(samples, chip_camera, event_ns, corners, width_m, height_m)
+        result = measure_chip(samples, chip_camera, event_ns, corners, width_m, height_m)
+        return recover_short_chip(samples, event_ns, result, acquisition_regions.get(chip_camera), args.max_radius)
 
     if args.vision_trigger:
         print("CHIP DEMO | C calibrate | A arm camera trigger | D cancel | Q quit", flush=True)

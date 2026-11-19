@@ -1,6 +1,7 @@
 """Measure a short chip that stays in a calibrated vertical plane."""
 
 from collections import deque
+from itertools import product
 
 import cv2
 import numpy as np
@@ -130,8 +131,12 @@ def measure_chip(frames, camera, event_ns, corners, width_m, height_m):
                 break
         flight.append((t, position, radius))
 
-    if len(flight) < 4 or flight[-1][0] - flight[0][0] < 35_000_000:
-        return {**result, "reason": "Need four rising ball detections inside the calibration area"}
+    if len(flight) < 3 or flight[-1][0] - flight[0][0] < 25_000_000:
+        return {**result, "reason": "Need three rising ball detections inside the calibration area"}
+    return _fit_flight(flight, result)
+
+
+def _fit_flight(flight, result):
     times = np.array([(t - flight[0][0]) / 1e9 for t, _, _ in flight])
     positions = np.array([[x, 0, z] for _, (x, z), _ in flight])
     velocity = estimate_velocity(positions, times)
@@ -144,3 +149,121 @@ def measure_chip(frames, camera, event_ns, corners, width_m, height_m):
     return {**result, "status": "estimated", "metrics": metrics,
             "sample_count": len(flight), "positions_m": positions[:, [0, 2]].tolist(),
             "sensor_elapsed_s": times.tolist(), "fit_max_error_m": residual}
+
+
+_RIM_ANGLES = np.linspace(0, 2 * np.pi, 48, endpoint=False)
+_RIM_OFFSETS = np.stack((np.cos(_RIM_ANGLES), np.sin(_RIM_ANGLES)), axis=1)
+
+
+def _circles(image, minimum, maximum, *, threshold=16):
+    circles = cv2.HoughCircles(image, cv2.HOUGH_GRADIENT, 1, 13, param1=65, param2=threshold,
+                              minRadius=minimum, maxRadius=maximum)
+    return circles[0] if circles is not None else ()
+
+
+def _ring(image, center, radius, scale):
+    xx, yy = np.rint(center + radius * scale * _RIM_OFFSETS).astype(int).T
+    return image[np.clip(yy, 0, image.shape[0] - 1), np.clip(xx, 0, image.shape[1] - 1)].astype(np.int16)
+
+
+def recover_short_chip(frames, event_ns, result, tee_region, max_radius):
+    """Recover an early flight from round objects that change between saved frames."""
+    if not tee_region or result.get("metrics"):
+        return result
+    x, y, width, height = tee_region
+    tee_click = np.array([x + width / 2, y + height / 2])
+    reference = [f.image for f in frames if -.28 <= (f.host_ns - event_ns) / 1e9 <= -.095]
+    if len(reference) < 3:
+        return result
+    median = cv2.GaussianBlur(np.median(reference, axis=0).astype(np.uint8), (5, 5), 0)
+    tee_choices = []
+    for cx, cy, radius in _circles(median, 12, min(max_radius, 42)):
+        center = np.array([cx, cy])
+        distance = np.linalg.norm(center - tee_click)
+        if distance > 38:
+            continue
+        rim = _ring(median, center, radius, .87) - _ring(median, center, radius, 1.12)
+        support = np.mean(rim > 10)
+        if support >= .48:
+            tee_choices.append((distance - 12 * support - .15 * (cy - tee_click[1]), center, radius))
+    if not tee_choices:
+        return result
+    _, tee_center, tee_radius = min(tee_choices, key=lambda candidate: candidate[0])
+    corners = result["corners_px"]
+    contour = np.asarray(corners, dtype=np.float32)
+    if cv2.pointPolygonTest(contour, tuple(map(float, tee_center)), False) < 0:
+        return result
+    transform = calibrate_plane(corners, result["width_m"], result["height_m"])
+
+    def project(pixel):
+        return cv2.perspectiveTransform(np.array([[pixel]], dtype=float), transform)[0, 0]
+
+    origin = project(tee_center)
+    candidates = []
+    previous = None
+    for frame in frames:
+        elapsed = (frame.host_ns - event_ns) / 1e9
+        if not -.09 <= elapsed <= .16:
+            continue
+        blurred = cv2.GaussianBlur(frame.image, (5, 5), 0)
+        change = cv2.absdiff(blurred, previous) if previous is not None else None
+        previous = blurred
+        sensor_ns = frame.metadata.get("SensorTimestamp")
+        if change is None or not isinstance(sensor_ns, int) or sensor_ns <= 0:
+            continue
+        height, width = frame.image.shape
+        proposals = []
+        for cx, cy, radius in _circles(blurred, max(6, int(.53 * tee_radius)),
+                                       min(max_radius, round(1.45 * tee_radius)), threshold=14):
+            if not 1.1 * radius <= cx < width - 1.1 * radius or not 1.1 * radius <= cy < height - 1.1 * radius:
+                continue
+            if cv2.pointPolygonTest(contour, (float(cx), float(cy)), False) < 0:
+                continue
+            position = project((cx, cy))
+            if np.any(position - origin < .008):
+                continue
+
+            center = np.array([cx, cy])
+            motion = np.mean(_ring(change, center, radius, .65) > 11)
+            edge = np.mean(abs(_ring(blurred, center, radius, .89) - _ring(blurred, center, radius, 1.08)) > 10)
+            if motion >= .45 and edge >= .39:
+                ball = {"center": (round(float(cx)), round(float(cy))),
+                        "radius": round(float(radius)), "circularity": float(edge)}
+                proposals.append((frame, sensor_ns, position, ball, motion * edge))
+        candidates.append(sorted(proposals, key=lambda p: -p[4])[:4])
+
+    best = None
+    for a, b, c in zip(candidates, candidates[1:], candidates[2:]):
+        for first, middle, last in product(a, b, c):
+            points = (first, middle, last)
+            t0, t1, t2 = (p[1] for p in points)
+            if not (0 < t1 - t0 <= 55_000_000 and 0 < t2 - t1 <= 55_000_000 and t2 - t0 >= 25_000_000):
+                continue
+            p0, p1, p2 = (p[2] for p in points)
+            if np.any(np.diff([p0, p1, p2], axis=0) < [.008, -.003]):
+                continue
+            span = p2 - p0
+            if span[0] < .035 or span[1] < .010:
+                continue
+            if any(not .65 <= after[3]["radius"] / before[3]["radius"] <= 1.5
+                   for before, after in zip(points, points[1:])):
+                continue
+            error = np.linalg.norm(p1 - (p0 + span * (t1 - t0) / (t2 - t0)))
+            start_ratio = (p0[0] - origin[0]) / span[0]
+            if error > .014 or abs(p0[1] - start_ratio * span[1] - origin[1]) > .045:
+                continue
+            first_elapsed = (first[0].host_ns - event_ns) / 1e9
+            score = sum(p[4] for p in points) / 3 - 12 * error - 8 * max(0, first_elapsed)
+            if best is None or score > best[0]:
+                best = score, points
+    if best is None:
+        return result
+    points = best[1]
+    fit = _fit_flight([(p[1], p[2], p[3]["radius"]) for p in points],
+                      {key: value for key, value in result.items() if key != "reason"})
+    if fit.get("metrics"):
+        for frame, _, _, ball, _ in points:
+            frame.ball = ball
+        fit.update(tracking="motion_confirmed_short_flight", tee_center_px=tee_center.tolist(),
+                   flight_centers_px=[p[3]["center"] for p in points])
+    return fit

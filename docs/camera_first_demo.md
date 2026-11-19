@@ -213,8 +213,9 @@ is the arctangent of their ratio. The fit uses early-flight ball centers mapped 
 meters and elapsed sensor time from the calibrated side camera. The second camera
 records the same attempt for visual review. The microphone initiates recording.
 Only camera timestamps determine velocity. Keep the chip in the calibration plane
-for meaningful scale and angle. At least four rising detections are required, so
-use a gentle chip and a large enough field of view. The demo estimates speed and
+for meaningful scale and angle. At least three rising detections are required.
+Click the stationary ball in the side view to give the saved-clip motion search
+a tee location if the live tracker loses the ball. The demo estimates speed and
 elevation only. Full 3D launch, spin, and carry require additional calibration and
 timing validation.
 

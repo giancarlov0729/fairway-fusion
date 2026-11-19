@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
-from fairway_fusion.cameras.chip import TeeDeparture, calibrate_plane, measure_chip
+from fairway_fusion.cameras.chip import TeeDeparture, calibrate_plane, measure_chip, recover_short_chip
 from fairway_fusion.cameras.impact import ImpactRecorder
 from fairway_fusion.hardware.pico_client import PicoRejected
 
@@ -158,3 +158,29 @@ def test_camera_trigger_needs_a_stationary_ball_then_forward_rise(tmp_path, risi
     assert manifest["trigger_source"] == "camera_tee_departure"
     assert manifest["metrics"]["speed_m_s"] == pytest.approx(2.236, abs=.01)
     assert manifest["metrics"]["launch_angle_deg"] == pytest.approx(26.565, abs=.01)
+
+
+@pytest.mark.parametrize("airborne_frames", [2, 3])
+def test_short_flight_recovery_uses_motion_instead_of_stale_tee_lock(airborne_frames):
+    corners = [(40, 40), (340, 40), (340, 190), (40, 190)]
+    event = 1_000_000_000
+    frames = []
+    for i in range(-40, 10):
+        image = np.full((240, 400), 55, dtype=np.uint8)
+        cv2.circle(image, (245, 94), 20, 155, -1)
+        if i < 0:
+            cv2.circle(image, (85, 155), 20, 225, -1)
+        if 0 <= i < airborne_frames:
+            cv2.circle(image, (120 + 35 * i, 138 - 17 * i), 20, 225, -1)
+        now = event + i * 16_666_667
+        frames.append(Frame(0, now, image, {"SensorTimestamp": now}, {"center": (85, 155), "radius": 20}))
+    rejected = measure_chip(frames, 0, event, corners, .6, .3)
+    assert rejected["metrics"] is None
+    result = recover_short_chip(frames, event, rejected, (40, 110, 90, 90), 56)
+    if airborne_frames == 2:
+        assert result["metrics"] is None
+    else:
+        assert result["sample_count"] == 3
+        assert "reason" not in result
+        assert result["metrics"]["speed_m_s"] == pytest.approx(4.67, abs=.25)
+        assert result["flight_centers_px"][-1] == pytest.approx((190, 104), abs=3)
