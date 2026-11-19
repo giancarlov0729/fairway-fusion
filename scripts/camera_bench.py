@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
-from fairway_fusion.cameras.chip import calibrate_plane, measure_chip
+from fairway_fusion.cameras.chip import TeeDeparture, calibrate_plane, measure_chip
 from fairway_fusion.detection.ball_detector import detect_ball, detect_moving_ball, follow_ball
 
 
@@ -236,6 +236,20 @@ def select_chip_plane(frame, width_m, height_m):
             cv2.destroyWindow(title)
 
 
+def report_chip(folder, manifest):
+    measurement = manifest.get("measurement", {})
+    metrics = measurement.get("metrics")
+    if metrics:
+        status = (f"Chip: {metrics['speed_m_s']:.2f} m/s | "
+                  f"{metrics['launch_angle_deg']:.1f} deg elevation (estimated)")
+    elif manifest.get("pico_rejection") == "GATE_NOT_QUIET":
+        status = "MIC GATE BUSY / Check sensor LED and GP7 wiring"
+    else:
+        status = measurement.get("reason", "Capture " + manifest["status"])
+    print(f"{status}\nSaved: {folder / 'manifest.json'}", flush=True)
+    return status
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cameras", type=int, nargs=2, default=[0, 1])
@@ -256,6 +270,7 @@ def main():
     parser.add_argument("--headless-seconds", type=float,
                         help="Save one timed clip without a preview, then exit (maximum 5 s)")
     parser.add_argument("--pico-port", help="Pico USB serial path, or auto to find one Pico")
+    parser.add_argument("--vision-trigger", action="store_true", help="Trigger on a rising ball leaving the tee")
     parser.add_argument("--outputs-disconnected", action="store_true",
                         help="Confirm GP2/GP3/GP4 are disconnected from cameras and lighting")
     parser.add_argument("--chip-camera", type=int, help="Side-view camera index (default first camera)")
@@ -274,11 +289,14 @@ def main():
         parser.error("--headless-seconds must be greater than zero and at most 5")
     chip_camera = args.cameras[0] if args.chip_camera is None else args.chip_camera
     width_m, height_m = args.chip_plane_m
+    chip_mode = bool(args.pico_port or args.vision_trigger)
+    if args.vision_trigger and (args.pico_port or args.headless_seconds is not None):
+        parser.error("Vision trigger requires a desktop preview and uses no Pico port")
+    if chip_mode and (chip_camera not in args.cameras or not all(math.isfinite(m) and m > 0 for m in (width_m, height_m))):
+        parser.error("Select a connected chip camera and positive calibration dimensions")
     if args.pico_port:
         if not args.outputs_disconnected or args.headless_seconds is not None:
             parser.error("Pico mode requires --outputs-disconnected and a desktop preview")
-        if chip_camera not in args.cameras or not all(math.isfinite(m) and m > 0 for m in (width_m, height_m)):
-            parser.error("Select a connected chip camera and positive calibration dimensions")
         if args.pico_port == "auto":
             ports = sorted(Path("/dev/serial/by-id").glob("usb-*Pico*-if00"))
             if len(ports) != 1:
@@ -310,7 +328,7 @@ def main():
                     min_radius=args.min_radius, max_radius=args.max_radius, regions=regions,
                     acquire_min_radius=acquire_radius, acquisition_regions=acquisition_regions)
     headless = args.headless_seconds is not None
-    duration = args.headless_seconds or (3 if args.pico_port else 2)
+    duration = args.headless_seconds or (3 if chip_mode else 2)
     buffer = FrameBuffer(max_frames=int(2 * args.fps * (duration + 1)))
     armed = False
     trigger_ns = None
@@ -330,6 +348,7 @@ def main():
     corners = None
     eligible_arm_ns = 0
     demo_status = "C: calibrate side view"
+    vision = None
 
     def click_tee(event, x, y, *_):
         if event == cv2.EVENT_LBUTTONDOWN and 0 <= x < 640 * len(args.cameras) and 0 <= y < 480:
@@ -348,7 +367,9 @@ def main():
                        acquisition_regions=acquisition_regions)
         return measure_chip(samples, chip_camera, event_ns, corners, width_m, height_m)
 
-    if args.pico_port:
+    if args.vision_trigger:
+        print("CHIP DEMO | C calibrate | A arm camera trigger | D cancel | Q quit", flush=True)
+    elif args.pico_port:
         print("CHIP DEMO | C calibrate | A arm microphone | T test trigger | D cancel | Q quit", flush=True)
     else:
         print("FREE-RUNNING cameras; no Pico control, hardware synchronization, or shot metrics.")
@@ -395,7 +416,7 @@ def main():
                 Frame(number, time.monotonic_ns(), image, metadata, None)
                 for number, (image, metadata) in zip(args.cameras, read_requests(jobs))
             ]
-            if armed or headless or recorder:
+            if armed or headless or chip_mode:
                 for frame in frames:
                     buffer.append(frame)
             now_ns = time.monotonic_ns()
@@ -411,10 +432,17 @@ def main():
                     capture.close()
                 # Both recording modes defer detection to protect capture cadence.
                 print(f"Analyzing {len(buffer.frames)} captured frames.", flush=True)
-                analyze_frames(buffer.frames, regions, args.min_radius, args.max_radius, {},
-                               acquire_radius=acquire_radius, acquisition_regions=acquisition_regions)
-                manifest = buffer.save(folder, trigger_ns=trigger_ns, settings=settings)
-                print(f"Saved {len(manifest['frames'])} frames: {folder / 'manifest.json'}")
+                if args.vision_trigger:
+                    measurement = measure(buffer.frames, trigger_ns)
+                    manifest = buffer.save(folder, trigger_ns=trigger_ns, settings=settings, measurement=measurement)
+                    demo_status = report_chip(folder, manifest)
+                    vision = None
+                    eligible_arm_ns = time.monotonic_ns() + 1_000_000_000
+                else:
+                    analyze_frames(buffer.frames, regions, args.min_radius, args.max_radius, {},
+                                   acquire_radius=acquire_radius, acquisition_regions=acquisition_regions)
+                    manifest = buffer.save(folder, trigger_ns=trigger_ns, settings=settings)
+                    print(f"Saved {len(manifest['frames'])} frames: {folder / 'manifest.json'}")
                 if headless:
                     break
                 armed, deadline_ns = False, None
@@ -443,17 +471,7 @@ def main():
                 if recorder.state == "PICO ARMED" and previous_state != recorder.state:
                     print("PICO ARMED: chip now (10-second arm window).", flush=True)
                 if saved:
-                    folder, manifest = saved
-                    measurement = manifest.get("measurement", {})
-                    metrics = measurement.get("metrics")
-                    if metrics:
-                        demo_status = (f"Chip: {metrics['speed_m_s']:.2f} m/s | "
-                                       f"{metrics['launch_angle_deg']:.1f} deg elevation (estimated)")
-                    elif manifest.get("pico_rejection") == "GATE_NOT_QUIET":
-                        demo_status = "MIC GATE BUSY / Check sensor LED and GP7 wiring"
-                    else:
-                        demo_status = measurement.get("reason", "Capture " + manifest["status"])
-                    print(f"{demo_status}\nSaved: {folder / 'manifest.json'}", flush=True)
+                    demo_status = report_chip(*saved)
                     buffer.frames.clear()
                     eligible_arm_ns = time.monotonic_ns() + 1_000_000_000
             if preview_job is not None and preview_job.done():
@@ -469,6 +487,16 @@ def main():
                     for frame in tracked_frames:
                         if frame.camera in preview_balls:
                             preview_tracks[frame.camera] = (preview_balls[frame.camera], frame.host_ns)
+                    if vision is not None and deadline_ns is None:
+                        side = next(frame for frame in tracked if frame.camera == chip_camera)
+                        was_ready = vision.ready
+                        event_ns = vision.observe(side.host_ns, balls.get(chip_camera))
+                        if vision.ready and not was_ready:
+                            print("CAMERA ARMED: chip now.", flush=True)
+                        if event_ns is not None:
+                            trigger_ns = event_ns
+                            deadline_ns = now_ns + 1_000_000_000
+                            print("Ball departure detected. Saving clip.", flush=True)
                 tracking_job = None
             motion_history.append(frames)
             if (len(motion_history) == motion_history.maxlen and preview_job is None
@@ -498,6 +526,10 @@ def main():
                 )
                 if recorder:
                     status = recorder.state if recorder.active else demo_status
+                elif args.vision_trigger and deadline_ns is None:
+                    status = demo_status
+                    if vision is not None:
+                        status = "CAMERA ARMED / CHIP NOW" if vision.ready else "WAITING FOR STATIONARY BALL"
                 # Apply each circle to the same image the tracker analyzed.
                 if tracked_frames and now_ns - tracked_frames[0].host_ns <= 120_000_000:
                     show_preview(tracked_frames, status, sensor_timestamps, preview_balls, acquisition_regions)
@@ -509,23 +541,34 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
-            if recorder:
-                if key == ord("c") and not recorder.active:
+            if chip_mode:
+                active = armed or (recorder and recorder.active)
+                if key == ord("c") and not active:
                     selected = next(frame for frame in frames if frame.camera == chip_camera)
                     corners = select_chip_plane(selected, width_m, height_m)
                     buffer.frames.clear()
                     eligible_arm_ns = time.monotonic_ns() + 1_000_000_000
                     demo_status = "Place ball and press A to arm" if corners else "C: calibrate side view"
-                elif key == ord("a") and not recorder.active:
+                elif key == ord("a") and not active:
                     if corners and now_ns >= eligible_arm_ns:
-                        recorder.arm()
+                        if recorder:
+                            recorder.arm()
+                        else:
+                            vision = TeeDeparture(corners, width_m, height_m)
+                            armed = True
+                            print("Leave the ball still until CAMERA ARMED appears.", flush=True)
                     elif corners:
                         print("Wait one second for the stationary ball before arming.", flush=True)
                     else:
                         print("Press C to calibrate the side view first.", flush=True)
                 elif key == ord("d"):
-                    recorder.cancel()
-                elif key == ord("t"):
+                    if recorder:
+                        recorder.cancel()
+                    else:
+                        armed, deadline_ns, vision = False, None, None
+                        buffer.frames.clear()
+                        demo_status = "Place ball and press A to arm" if corners else "C: calibrate side view"
+                elif key == ord("t") and recorder:
                     recorder.test_trigger()
                 continue
             if key == ord("a") and not armed:

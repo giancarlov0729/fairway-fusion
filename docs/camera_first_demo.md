@@ -159,6 +159,20 @@ the manifest refer to the full 640×480 image.
 
 ## Microphone-triggered ping-pong chip demo
 
+For practice in a noisy room, start the same demo with an optical trigger:
+
+```bash
+./start-cameras.sh --chip-demo --vision-trigger
+```
+
+Calibrate and place the ball as described below. After pressing **A**, keep the
+ball still until **CAMERA ARMED** appears. The side camera looks for the ball
+to rise and move downrange, then saves both views and runs the same measurement.
+The Pico and microphone are unused in this mode. A deliberate lift or toss
+that looks like a chip in the calibrated view can also trigger it.
+
+### Using the microphone trigger
+
 Use the Pico 2 W capture firmware and conditioned microphone GATE on GP7 as shown
 in [the Pico wiring guide](pico_capture.md). Leave GP2, GP3 and GP4 disconnected
 from camera and lighting interfaces. Close any programs using the cameras or Pico

@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
-from fairway_fusion.cameras.chip import calibrate_plane, measure_chip
+from fairway_fusion.cameras.chip import TeeDeparture, calibrate_plane, measure_chip
 from fairway_fusion.cameras.impact import ImpactRecorder
 from fairway_fusion.hardware.pico_client import PicoRejected
 
@@ -131,3 +131,30 @@ def test_persistently_busy_gate_preserves_rejection_and_disarms(tmp_path, monkey
 def test_crossed_calibration_is_rejected():
     with pytest.raises(ValueError, match="four distinct corners"):
         calibrate_plane([(40, 40), (340, 190), (340, 40), (40, 190)], .60, .30)
+
+
+@pytest.mark.parametrize("rising", [False, True])
+def test_camera_trigger_needs_a_stationary_ball_then_forward_rise(tmp_path, rising):
+    corners = [(40, 40), (340, 40), (340, 190), (40, 190)]
+    detector = TeeDeparture(corners, .6, .3)
+    buffer = FrameBuffer()
+    stamp = 1_000_000_000
+    event = None
+    for i in range(27):
+        flight_steps = max(0, i - 20)
+        ball = {"center": (75 + 20 * flight_steps, 170 - 10 * flight_steps * rising), "radius": 10}
+        host_ns = stamp + i * 20_000_000
+        if event is None:
+            event = detector.observe(host_ns, ball)
+        if i == 20:
+            assert detector.ready
+        buffer.append(Frame(0, host_ns, np.zeros((8, 8), np.uint8), {"SensorTimestamp": host_ns}, ball))
+    if not rising:
+        assert event is None
+        return
+    assert event == stamp + 21 * 20_000_000
+    measurement = measure_chip(buffer.frames, 0, event, corners, .6, .3)
+    manifest = buffer.save(tmp_path / "vision", trigger_ns=event, settings={}, measurement=measurement)
+    assert manifest["trigger_source"] == "camera_tee_departure"
+    assert manifest["metrics"]["speed_m_s"] == pytest.approx(2.236, abs=.01)
+    assert manifest["metrics"]["launch_angle_deg"] == pytest.approx(26.565, abs=.01)

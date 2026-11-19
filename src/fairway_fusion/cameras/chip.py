@@ -1,5 +1,7 @@
 """Measure a short chip that stays in a calibrated vertical plane."""
 
+from collections import deque
+
 import cv2
 import numpy as np
 
@@ -17,6 +19,69 @@ def calibrate_plane(corners, width_m, height_m):
         raise ValueError("Calibration dimensions must be positive meters")
     plane = np.float32([[0, height_m], [width_m, height_m], [width_m, 0], [0, 0]])
     return cv2.getPerspectiveTransform(corners, plane)
+
+
+class TeeDeparture:
+    """One-shot trigger on a rising, downrange departure from a stable tee position."""
+
+    def __init__(self, corners, width_m, height_m):
+        self.contour = np.asarray(corners, dtype=np.float32)
+        self.transform = calibrate_plane(corners, width_m, height_m)
+        self.rest = deque(maxlen=20)
+        self.origin = None
+        self.last_rest_ns = 0
+        self.first_departure = None
+
+    @property
+    def ready(self):
+        return self.origin is not None
+
+    def observe(self, timestamp_ns, ball):
+        if self.ready and timestamp_ns - self.last_rest_ns > 180_000_000:
+            self.origin = self.first_departure = None
+            self.rest.clear()
+        if ball is None:
+            if not self.ready:
+                self.rest.clear()
+            return None
+        pixel = tuple(map(float, ball["center"]))
+        if cv2.pointPolygonTest(self.contour, pixel, False) < 0:
+            if not self.ready:
+                self.rest.clear()
+            return None
+        position = cv2.perspectiveTransform(np.array([[pixel]]), self.transform)[0, 0]
+        if not self.ready:
+            if position[1] > .075:
+                self.rest.clear()
+                return None
+            if self.rest:
+                start_ns, start = self.rest[0]
+                if (np.linalg.norm(position - start) > .012
+                        or timestamp_ns - self.rest[-1][0] > 90_000_000):
+                    self.rest.clear()
+                elif len(self.rest) >= 4 and timestamp_ns - start_ns >= 250_000_000:
+                    self.origin = np.median([p for _, p in self.rest], axis=0)
+                    self.last_rest_ns = timestamp_ns
+            self.rest.append((timestamp_ns, position))
+            return None
+
+        forward, rise = position - self.origin
+        if np.linalg.norm(position - self.origin) <= .012:
+            self.last_rest_ns = timestamp_ns
+            self.first_departure = None
+        elif forward >= .014 and rise >= .010:
+            if self.first_departure is not None:
+                first_ns, first_position = self.first_departure
+                dx, dz = position - first_position
+                if 0 < timestamp_ns - first_ns <= 100_000_000 and dx >= .004 and dz >= -.004:
+                    return first_ns
+                if timestamp_ns - first_ns <= 100_000_000:
+                    return None
+            if forward >= .3 * (timestamp_ns - self.last_rest_ns) / 1e9:
+                self.first_departure = (timestamp_ns, position)
+        else:
+            self.first_departure = None
+        return None
 
 
 def measure_chip(frames, camera, event_ns, corners, width_m, height_m):
