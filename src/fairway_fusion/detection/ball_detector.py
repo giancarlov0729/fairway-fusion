@@ -230,6 +230,9 @@ def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=Non
         score = (2 * support + aligned + 0.8 * dim_core + 0.55 * tight_edge
                  + 0.25 * fill + 0.6 * radius / max_radius - np.std(core, axis=1) / 300)
         score = np.where(shaded_ball, np.maximum(score, 3 + unsigned_rim + near_rim), score)
+        # When silhouettes are otherwise comparable, the near turf is usually
+        # lower in a view aimed across the hitting surface.
+        score += 0.65 * y / height
     else:
         score = (support + 0.25 * sharpness + 0.25 * fill) * radius**0.20
     if not valid.any():

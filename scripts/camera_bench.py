@@ -106,22 +106,25 @@ def preview_ball(frame, reference, roi, min_radius, max_radius, prior, detection
                  older_reference=None, acquire_radius=None, acquire_roi=None):
     acquiring = prior is None and acquire_radius is not None
     if acquiring:
-        # Apparent size gates initial lock only; a tracked ball can shrink in flight.
+        # Wait for the stationary search before allowing motion to steer the lock.
+        # A tracked ball can shrink and leave the tee area after impact.
         min_radius = acquire_radius
         roi = acquire_roi or roi
+        reference = older_reference = None
     moving = detect_frame(frame.image, roi, min_radius, max_radius,
                           motion_reference=reference.image, motion_only=True) if reference else None
     if moving is None and older_reference is not None and older_reference is not reference:
         moving = detect_frame(frame.image, roi, min_radius, max_radius,
                               motion_reference=older_reference.image, motion_only=True,
                               mixed_contrast=True)
-    if acquiring and moving and moving["circularity"] < 0.67:
-        moving = None
-    if moving and (prior is None or (
-        abs(prior["radius"] - moving["radius"]) <= 0.5 * prior["radius"]
-        and math.dist(prior["center"], moving["center"]) <= 6 * prior["radius"]
-    )):
-        return moving
+    if moving:
+        if prior is None:
+            return moving
+        distance = math.dist(prior["center"], moving["center"])
+        if abs(prior["radius"] - moving["radius"]) > 0.5 * prior["radius"] or distance > 6 * prior["radius"]:
+            moving = None
+        elif distance <= 1.25 * prior["radius"]:
+            return moving
     seed = prior or detection
     if seed:
         x, y, width, height = roi or (0, 0, frame.image.shape[1], frame.image.shape[0])
@@ -131,8 +134,14 @@ def preview_ball(frame, reference, roi, min_radius, max_radius, prior, detection
         if tracked:
             tx, ty = tracked["center"]
             tracked["center"] = (tx + x, ty + y)
+            displacement = math.dist(tracked["center"], seed["center"])
+            if acquiring and displacement > 0.45 * seed["radius"]:
+                return None
+            # A nearby stationary ball takes precedence over unrelated motion.
+            if moving and displacement > 0.45 * seed["radius"]:
+                return moving
             return tracked
-    return None
+    return moving
 
 
 def track_preview(frames, references, older_references, regions, min_radius, max_radius,
@@ -158,7 +167,7 @@ def track_preview(frames, references, older_references, regions, min_radius, max
 PREVIEW_WINDOW = "Fairway Fusion camera bench"
 
 
-def show_preview(frames, status, sensor_timestamps, balls):
+def show_preview(frames, status, sensor_timestamps, balls, acquisition_regions=None):
     panels = []
     for frame in frames:
         panel = cv2.cvtColor(frame.image, cv2.COLOR_GRAY2BGR)
@@ -169,6 +178,10 @@ def show_preview(frames, status, sensor_timestamps, balls):
             fps_text = f"{fps:.1f} capture fps"
         ball = balls.get(frame.camera)
         detection_text = "BALL CANDIDATE" if ball else "SEARCHING"
+        tee = (acquisition_regions or {}).get(frame.camera)
+        if tee and not ball:
+            x, y, width, height = tee
+            cv2.rectangle(panel, (x, y), (x + width - 1, y + height - 1), (255, 200, 0), 1)
         if ball:
             cv2.circle(panel, ball["center"], ball["radius"], (0, 255, 0), 2)
         cv2.putText(panel, f"Cam {frame.camera}: {detection_text} | {fps_text}", (8, 25),
@@ -311,10 +324,16 @@ def main():
     motion_history = deque(maxlen=7)
     preview_balls = {}
     preview_tracks = {}
+    tee_changed_ns = 0
+    tee_click = deque(maxlen=1)
     next_preview_ns = 0
     corners = None
     eligible_arm_ns = 0
     demo_status = "C: calibrate side view"
+
+    def click_tee(event, x, y, *_):
+        if event == cv2.EVENT_LBUTTONDOWN and 0 <= x < 640 * len(args.cameras) and 0 <= y < 480:
+            tee_click.append((args.cameras[x // 640], x % 640, y))
 
     def measure(frames, event_ns):
         left, top, width, height = cv2.boundingRect(np.asarray(corners, dtype=np.float32))
@@ -359,6 +378,10 @@ def main():
             capture.callback(camera.stop)
         if not headless:
             stack.callback(cv2.destroyAllWindows)
+            if acquire_radius is not None:
+                cv2.namedWindow(PREVIEW_WINDOW, cv2.WINDOW_AUTOSIZE)
+                cv2.setMouseCallback(PREVIEW_WINDOW, click_tee)
+                print("Click the stationary ball in either view to focus its first-lock search.", flush=True)
         recorder = None
         if args.pico_port:
             recorder = ImpactRecorder(buffer, args.output, settings, args.pico_port, measure=measure)
@@ -400,6 +423,20 @@ def main():
                     timestamps.clear()
             if headless:
                 continue
+            if tee_click:
+                number, x, y = tee_click.pop()
+                if not armed and not (recorder and recorder.active):
+                    margin = args.max_radius + 12
+                    left, top = max(0, x - margin), max(0, y - margin)
+                    acquisition_regions[number] = (left, top, min(640, x + margin + 1) - left,
+                                                    min(480, y + margin + 1) - top)
+                    tee_changed_ns = now_ns
+                    preview_tracks.clear()
+                    preview_results = {}
+                    preview_balls.clear()
+                    tracked_frames = []
+                    motion_history.clear()
+                    print(f"Camera {number} tee search centered at ({x}, {y}).", flush=True)
             if recorder:
                 previous_state = recorder.state
                 saved = recorder.tick(now_ns)
@@ -418,14 +455,18 @@ def main():
                     buffer.frames.clear()
                     eligible_arm_ns = time.monotonic_ns() + 1_000_000_000
             if preview_job is not None and preview_job.done():
-                preview_results = preview_job.result()
-                preview_result_ns = preview_job_ns
+                candidates = preview_job.result()
+                if preview_job_ns >= tee_changed_ns:
+                    preview_results = candidates
+                    preview_result_ns = preview_job_ns
                 preview_job = None
             if tracking_job is not None and tracking_job.done():
-                tracked_frames, preview_balls = tracking_job.result()
-                for frame in tracked_frames:
-                    if frame.camera in preview_balls:
-                        preview_tracks[frame.camera] = (preview_balls[frame.camera], frame.host_ns)
+                tracked, balls = tracking_job.result()
+                if tracked[0].host_ns >= tee_changed_ns:
+                    tracked_frames, preview_balls = tracked, balls
+                    for frame in tracked_frames:
+                        if frame.camera in preview_balls:
+                            preview_tracks[frame.camera] = (preview_balls[frame.camera], frame.host_ns)
                 tracking_job = None
             motion_history.append(frames)
             if (len(motion_history) == motion_history.maxlen and preview_job is None
@@ -434,7 +475,7 @@ def main():
                 # for it or queues frames when the detector falls behind.
                 preview_job = preview_worker.submit(
                     analyze_preview, (motion_history[0], motion_history[3], frames),
-                    regions, acquire_radius or args.min_radius, args.max_radius, acquisition_regions,
+                    regions, acquire_radius or args.min_radius, args.max_radius, acquisition_regions.copy(),
                 )
                 preview_job_ns = now_ns
             for frame in frames:
@@ -448,7 +489,7 @@ def main():
                         motion_history[0], regions, args.min_radius, args.max_radius,
                         preview_tracks.copy(),
                         preview_results if now_ns - preview_result_ns <= 300_000_000 else {},
-                        acquire_radius, acquisition_regions,
+                        acquire_radius, acquisition_regions.copy(),
                     )
                 status = "RECORDING" if deadline_ns is not None else (
                     "SOFTWARE ARMED" if armed else "READY / DISARMED"
@@ -457,9 +498,9 @@ def main():
                     status = recorder.state if recorder.active else demo_status
                 # Apply each circle to the same image the tracker analyzed.
                 if tracked_frames and now_ns - tracked_frames[0].host_ns <= 120_000_000:
-                    show_preview(tracked_frames, status, sensor_timestamps, preview_balls)
+                    show_preview(tracked_frames, status, sensor_timestamps, preview_balls, acquisition_regions)
                 else:
-                    show_preview(frames, status, sensor_timestamps, {})
+                    show_preview(frames, status, sensor_timestamps, {}, acquisition_regions)
                 next_preview_ns += 33_333_333
                 if next_preview_ns <= now_ns:
                     next_preview_ns = now_ns + 33_333_333

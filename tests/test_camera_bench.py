@@ -63,6 +63,8 @@ def test_near_ball_lock_ignores_distant_object_and_follows_out_of_tee_area():
     moving = background.copy()
     cv2.circle(moving, (225, 107), 15, 205, -1)
     airborne = Frame(0, 32_000_000, moving, {}, None)
+    _, cold = bench["track_preview"]([airborne], [parked], [parked], {}, 6, 56, {}, {}, 18)
+    assert cold == {}
     _, balls = bench["track_preview"]([airborne], [parked], [parked], {}, 6, 56,
                                        {0: (seed, parked.host_ns)}, {}, 18, tee)
     assert abs(balls[0]["center"][0] - 225) <= 2
@@ -73,6 +75,13 @@ def test_near_ball_lock_ignores_distant_object_and_follows_out_of_tee_area():
     bench["analyze_frames"]([*stationary, airborne], {}, 6, 56, {},
                             acquire_radius=18, acquisition_regions=tee)
     assert airborne.ball == balls[0]
+
+    clutter = still.copy()
+    cv2.circle(clutter, (232, 128), 23, 255, -1)
+    changed = Frame(0, 32_000_000, clutter, {}, None)
+    _, balls = bench["track_preview"]([changed], [parked], [parked], {}, 6, 56,
+                                       {0: (seed, parked.host_ns)}, {}, 18, tee)
+    assert abs(balls[0]["center"][0] - 153) <= 3
 
 
 def test_initial_lock_accepts_ball_with_dark_lower_rim():
