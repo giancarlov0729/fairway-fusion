@@ -150,6 +150,49 @@ path in a cluttered view. Repeat the option to set a region for the other camera
 Leave enough room for the full ball throughout the visible path. Coordinates in
 the manifest refer to the full 640×480 image.
 
+## Microphone-triggered ping-pong chip demo
+
+Use the Pico 2 W capture firmware and conditioned microphone GATE on GP7 as shown
+in [the Pico wiring guide](pico_capture.md). Leave GP2, GP3 and GP4 disconnected
+from camera and lighting interfaces. Close any programs using the cameras or Pico
+serial port. Run this in a Pi desktop terminal with the Pico connected over USB.
+
+```bash
+cd ~/fairway-fusion-bench-ball-detection
+./start-cameras.sh --chip-demo --outputs-disconnected
+```
+
+1. Set camera 0 side-on to the intended vertical flight plane with steady light
+   and a soft backstop. Use camera 1 for the second view. To measure from camera 1
+   instead, append `--chip-camera 1` to the command.
+2. Put four visible marks at the corners of a measured **60 cm wide by 30 cm high**
+   vertical rectangle in the intended flight plane. The bottom edge is level with
+   the hitting surface. Use an open frame or temporarily hold a flat card in that
+   plane. Put the tee near the starting edge and leave room for several frames of
+   rising flight. For other dimensions, append `--chip-plane-m WIDTH HEIGHT` in
+   meters. Keep the camera and its focus fixed after calibration.
+3. Press **C** and click the tee-side top, downrange top, downrange bottom, then
+   tee-side bottom marks. Press **Enter** to accept. Remove the target without
+   moving the cameras. Place the ball on the starting side inside the rectangle
+   and leave it still for a second.
+4. Press **A**. When **PICO ARMED** appears, make a gentle chip in the calibrated
+   plane within ten seconds. The microphone gate initiates a clip automatically.
+   **D** cancels and **Q** quits. **T** tests the recording path while armed and
+   produces an explicitly labeled test clip.
+5. Read the estimated speed and elevation in the preview or terminal. Each attempt
+   saves evidence under `data/recordings/bench/`. The manifest includes the Pico
+   report, frame timestamps, calibration, and any accepted estimate or rejection.
+
+Speed is the magnitude of the fitted downrange and upward velocity, and elevation
+is the arctangent of their ratio. The fit uses early-flight ball centers mapped to
+meters and elapsed sensor time from the calibrated side camera. The second camera
+records the same attempt for visual review. The microphone initiates recording.
+Only camera timestamps determine velocity. Keep the chip in the calibration plane
+for meaningful scale and angle. At least four rising detections are required, so
+use a gentle chip and a large enough field of view. The demo estimates speed and
+elevation only. Full 3D launch, spin, and carry require additional calibration and
+timing validation.
+
 ## Separate Pico arming proof with no IR board
 
 Use the existing **Pico 2 W / RP2350** C firmware, not the older branch's RP2040

@@ -8,7 +8,11 @@ if [ ! -x "$bench_python" ]; then
     exit 1
 fi
 
-if [ "$#" -eq 0 ]; then
+if [ "${1:-}" = "--chip-demo" ]; then
+    shift
+    set -- --fps 60 --exposure-us 1000 --gain 8 \
+        --min-radius 6 --max-radius 56 --pico-port auto "$@"
+elif [ "$#" -eq 0 ]; then
     set -- --fps 60 --exposure-us 1000 --gain 8 \
         --min-radius 12 --max-radius 56
 fi

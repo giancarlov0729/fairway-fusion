@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
+from fairway_fusion.cameras.chip import calibrate_plane, measure_chip
 from fairway_fusion.detection.ball_detector import detect_ball, detect_moving_ball, follow_ball
 
 
@@ -127,6 +128,9 @@ def track_preview(frames, references, older_references, regions, min_radius, max
     return frames, balls
 
 
+PREVIEW_WINDOW = "Fairway Fusion camera bench"
+
+
 def show_preview(frames, status, sensor_timestamps, balls):
     panels = []
     for frame in frames:
@@ -148,7 +152,48 @@ def show_preview(frames, status, sensor_timestamps, balls):
     view = np.hstack(panels)
     cv2.putText(view, status + " | free-running / unsynchronized", (8, 470),
                 cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 255, 255), 2)
-    cv2.imshow("Fairway Fusion camera bench", view)
+    cv2.imshow(PREVIEW_WINDOW, view)
+
+
+def select_chip_plane(frame, width_m, height_m):
+    title = "Chip calibration"
+    corners = []
+
+    def click(event, x, y, *_):
+        if event == cv2.EVENT_LBUTTONDOWN and len(corners) < 4:
+            corners.append((x, y))
+
+    print(f"Camera {frame.camera}: select a {width_m:g} x {height_m:g} m vertical rectangle.", flush=True)
+    print("Click tee-top, far-top, far-bottom, tee-bottom. Enter saves, R resets, Esc cancels.", flush=True)
+    cv2.namedWindow(title, cv2.WINDOW_AUTOSIZE)
+    cv2.setMouseCallback(title, click)
+    try:
+        labels = ("Tee top", "Downrange top", "Downrange bottom", "Tee bottom")
+        while True:
+            panel = cv2.cvtColor(frame.image, cv2.COLOR_GRAY2BGR)
+            for index, point in enumerate(corners, start=1):
+                cv2.circle(panel, point, 5, (0, 255, 0), -1)
+                cv2.putText(panel, str(index), point, cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 255, 255), 2)
+            hint = labels[len(corners)] if len(corners) < 4 else "Enter to save"
+            cv2.putText(panel, f"{hint} | R reset | Esc cancel", (8, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 255, 255), 1)
+            cv2.imshow(title, panel)
+            key = cv2.waitKey(30) & 0xFF
+            if key == 27 or cv2.getWindowProperty(title, cv2.WND_PROP_VISIBLE) < 1:
+                return None
+            if key == ord("r"):
+                corners.clear()
+            if key in (10, 13) and len(corners) == 4:
+                try:
+                    calibrate_plane(corners, width_m, height_m)
+                except ValueError as error:
+                    print(error, flush=True)
+                    corners.clear()
+                else:
+                    return corners
+    finally:
+        if cv2.getWindowProperty(title, cv2.WND_PROP_VISIBLE) >= 1:
+            cv2.destroyWindow(title)
 
 
 def main():
@@ -165,6 +210,12 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("data/recordings/bench"))
     parser.add_argument("--headless-seconds", type=float,
                         help="Save one timed clip without a preview, then exit (maximum 5 s)")
+    parser.add_argument("--pico-port", help="Pico USB serial path, or auto to find one Pico")
+    parser.add_argument("--outputs-disconnected", action="store_true",
+                        help="Confirm GP2/GP3/GP4 are disconnected from cameras and lighting")
+    parser.add_argument("--chip-camera", type=int, help="Side-view camera index (default first camera)")
+    parser.add_argument("--chip-plane-m", nargs=2, type=float, default=(.60, .30),
+                        metavar=("WIDTH", "HEIGHT"), help="Measured vertical calibration rectangle in meters")
     args = parser.parse_args()
     if len(set(args.cameras)) != 2 or min(args.cameras) < 0:
         parser.error("Choose two distinct nonnegative camera indices")
@@ -174,6 +225,19 @@ def main():
         parser.error("Use gain 1-16 and 1 <= min-radius < max-radius <= 240")
     if args.headless_seconds is not None and not 0 < args.headless_seconds <= 5:
         parser.error("--headless-seconds must be greater than zero and at most 5")
+    chip_camera = args.cameras[0] if args.chip_camera is None else args.chip_camera
+    width_m, height_m = args.chip_plane_m
+    if args.pico_port:
+        if not args.outputs_disconnected or args.headless_seconds is not None:
+            parser.error("Pico mode requires --outputs-disconnected and a desktop preview")
+        if chip_camera not in args.cameras or not all(math.isfinite(m) and m > 0 for m in (width_m, height_m)):
+            parser.error("Select a connected chip camera and positive calibration dimensions")
+        if args.pico_port == "auto":
+            ports = sorted(Path("/dev/serial/by-id").glob("usb-*Pico*-if00"))
+            if len(ports) != 1:
+                parser.error("Connect one Pico over USB or supply its serial path with --pico-port")
+            args.pico_port = str(ports[0])
+        from fairway_fusion.cameras.impact import ImpactRecorder
     regions = {}
     for number, x, y, width, height in args.roi or ():
         if (number not in args.cameras or number in regions or x < 0 or y < 0
@@ -184,11 +248,17 @@ def main():
         from picamera2 import Picamera2
     except ImportError:
         parser.exit(1, "Picamera2 is required on the Pi. See docs/camera_first_demo.md.\n")
+    if hasattr(Picamera2, "global_camera_info"):
+        available = {info["Num"] for info in Picamera2.global_camera_info()}
+        missing = set(args.cameras) - available
+        if missing:
+            parser.exit(1, f"Missing camera indices {sorted(missing)}. "
+                        "Run rpicam-hello --list-cameras to check the two sensors.\n")
 
     settings = dict(size=[640, 480], fps=args.fps, exposure_us=args.exposure_us, gain=args.gain,
                     min_radius=args.min_radius, max_radius=args.max_radius, regions=regions)
     headless = args.headless_seconds is not None
-    duration = args.headless_seconds or 2
+    duration = args.headless_seconds or (3 if args.pico_port else 2)
     buffer = FrameBuffer(max_frames=int(2 * args.fps * (duration + 1)))
     armed = False
     trigger_ns = None
@@ -202,8 +272,27 @@ def main():
     preview_balls = {}
     preview_tracks = {}
     next_preview_ns = 0
-    print("FREE-RUNNING cameras; no Pico control, hardware synchronization, or shot metrics.")
-    print("a: software arm | space: save last ~2 s + next 1 s | d: disarm | q: quit")
+    corners = None
+    eligible_arm_ns = 0
+    demo_status = "C: calibrate side view"
+
+    def measure(frames, event_ns):
+        left, top, width, height = cv2.boundingRect(np.asarray(corners, dtype=np.float32))
+        # Include silhouettes that straddle the calibration boundary.
+        pad = args.max_radius
+        x, y = max(0, left - pad), max(0, top - pad)
+        roi = x, y, min(640, left + width + pad) - x, min(480, top + height + pad) - y
+        samples = [f for f in frames if f.camera == chip_camera
+                   and -850_000_000 <= f.host_ns - event_ns <= 300_000_000]
+        analyze_frames(samples, {chip_camera: regions.get(chip_camera, roi)},
+                       args.min_radius, args.max_radius, {})
+        return measure_chip(samples, chip_camera, event_ns, corners, width_m, height_m)
+
+    if args.pico_port:
+        print("CHIP DEMO | C calibrate | A arm microphone | T test trigger | D cancel | Q quit", flush=True)
+    else:
+        print("FREE-RUNNING cameras; no Pico control, hardware synchronization, or shot metrics.")
+        print("a: software arm | space: save last ~2 s + next 1 s | d: disarm | q: quit")
     with ExitStack() as stack:
         if not headless:
             # Leave CPU for libcamera and the GUI while OpenCV scans a preview.
@@ -229,6 +318,10 @@ def main():
             capture.callback(camera.stop)
         if not headless:
             stack.callback(cv2.destroyAllWindows)
+        recorder = None
+        if args.pico_port:
+            recorder = ImpactRecorder(buffer, args.output, settings, args.pico_port, measure=measure)
+            stack.callback(recorder.close)
         # The first camera can deliver a frame while the second starts.
         read_requests([camera.capture_request(wait=False) for camera in cameras])
         ready = False
@@ -238,7 +331,7 @@ def main():
                 Frame(number, time.monotonic_ns(), image, metadata, None)
                 for number, (image, metadata) in zip(args.cameras, read_requests(jobs))
             ]
-            if armed or headless:
+            if armed or headless or recorder:
                 for frame in frames:
                     buffer.append(frame)
             now_ns = time.monotonic_ns()
@@ -265,6 +358,23 @@ def main():
                     timestamps.clear()
             if headless:
                 continue
+            if recorder:
+                previous_state = recorder.state
+                saved = recorder.tick(now_ns)
+                if recorder.state == "PICO ARMED" and previous_state != recorder.state:
+                    print("PICO ARMED: chip now (10-second arm window).", flush=True)
+                if saved:
+                    folder, manifest = saved
+                    measurement = manifest.get("measurement", {})
+                    metrics = measurement.get("metrics")
+                    if metrics:
+                        demo_status = (f"Chip: {metrics['speed_m_s']:.2f} m/s | "
+                                       f"{metrics['launch_angle_deg']:.1f} deg elevation (estimated)")
+                    else:
+                        demo_status = measurement.get("reason", "Capture " + manifest["status"])
+                    print(f"{demo_status}\nSaved: {folder / 'manifest.json'}", flush=True)
+                    buffer.frames.clear()
+                    eligible_arm_ns = time.monotonic_ns() + 1_000_000_000
             if preview_job is not None and preview_job.done():
                 preview_results = preview_job.result()
                 preview_job = None
@@ -297,6 +407,8 @@ def main():
                 status = "RECORDING" if deadline_ns is not None else (
                     "SOFTWARE ARMED" if armed else "READY / DISARMED"
                 )
+                if recorder:
+                    status = recorder.state if recorder.active else demo_status
                 # Apply each circle to the same image the tracker analyzed.
                 if tracked_frames and now_ns - tracked_frames[0].host_ns <= 120_000_000:
                     show_preview(tracked_frames, status, sensor_timestamps, preview_balls)
@@ -308,6 +420,25 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
+            if recorder:
+                if key == ord("c") and not recorder.active:
+                    selected = next(frame for frame in frames if frame.camera == chip_camera)
+                    corners = select_chip_plane(selected, width_m, height_m)
+                    buffer.frames.clear()
+                    eligible_arm_ns = time.monotonic_ns() + 1_000_000_000
+                    demo_status = "Place ball and press A to arm" if corners else "C: calibrate side view"
+                elif key == ord("a") and not recorder.active:
+                    if corners and now_ns >= eligible_arm_ns:
+                        recorder.arm()
+                    elif corners:
+                        print("Wait one second for the stationary ball before arming.", flush=True)
+                    else:
+                        print("Press C to calibrate the side view first.", flush=True)
+                elif key == ord("d"):
+                    recorder.cancel()
+                elif key == ord("t"):
+                    recorder.test_trigger()
+                continue
             if key == ord("a") and not armed:
                 armed = True
                 next_preview_ns = 0
