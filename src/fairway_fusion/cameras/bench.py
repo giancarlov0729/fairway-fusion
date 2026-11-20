@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
+from fairway_fusion.analysis.carry import recording_carry
+
 import cv2
 import numpy as np
 
@@ -93,6 +95,8 @@ class FrameBuffer:
         if measurement is not None:
             manifest.update(status="completed", trigger_source="camera_tee_departure",
                             measurement=measurement, metrics=measurement.get("metrics"))
+        if manifest.get("status") == "completed" and manifest.get("measurement"):
+            manifest["measurement"] = recording_carry(manifest["measurement"])
         # Publish the complete manifest once all images have been saved.
         temporary = folder / "manifest.tmp"
         temporary.write_text(json.dumps(manifest, indent=2), encoding="utf-8")

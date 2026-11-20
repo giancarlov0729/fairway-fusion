@@ -6,6 +6,13 @@
   <div><span class="cap">{{ 'Estimated speed' if automatic else 'Ball speed' }}</span><div class="fig">{{ num(estimate.speed_m_s, 1 if automatic else 2) }} <small>m/s</small></div></div>
   <div><span class="cap">{{ 'Side-view angle' if automatic else 'Launch angle' }}</span><div class="fig">{{ num(estimate.launch_angle_deg, 0 if automatic else 1) }}<small>°</small></div></div>
 </div>
+{% set carry = review.measurement.get('carry') %}
+{% if carry %}
+<p><strong>Estimated carry</strong> &middot; {% if carry.estimated_carry_m is not none %}{{ num(carry.estimated_carry_m, 1) }} m ({{ num(carry.estimated_carry_yd, 1) }} yd){% else %}Unavailable{% endif %}</p>
+{% if carry.estimated_carry_m is not none %}
+<p class="muted small">Distance to first landing on level ground, assuming no wind and {{ num(carry.carry_assumptions.backspin_rpm, 0) }} rpm backspin.</p>
+{% else %}<p class="muted small">{{ carry.carry_error }}</p>{% endif %}
+{% endif %}
 {% if review.measurement.get('sample_count') and review.measurement.get('fit_max_error_m') is not none %}
 <p class="muted small">{{ review.measurement.sample_count }} airborne frames · maximum fit error {{ num(review.measurement.fit_max_error_m * 1000, 1) }} mm</p>
 {% endif %}

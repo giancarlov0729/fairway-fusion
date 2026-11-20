@@ -228,6 +228,8 @@ def test_live_shot_uses_ball_scale_without_a_manual_plane(rig):
     assert measurement["metrics"]["launch_angle_deg"] == pytest.approx(21.8, abs=2)
     page = client.get("/live").text
     assert "Automatic side-view estimate · Camera" in page
+    assert measurement["carry"]["estimated_carry_m"] > 0
+    assert "Estimated carry" in page and "yd)" in page
     assert "Estimated speed" in page and "m/s" in page
     assert "Side-view angle" in page and "ball’s diameter at rest" in page
     recording = client.get(f"/recordings/{capture_id}?frames=used")

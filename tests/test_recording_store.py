@@ -251,5 +251,7 @@ def test_vision_recording_preserves_session_from_arm_and_saves_provisional_metri
     assert row["session_id"] is None
     assert row["detections"]["trigger_source"] == "camera_tee_departure"
     client = create_app({"TESTING": True, "DATABASE_PATH": store.path}).test_client()
-    assert client.get(f"/api/recordings/{folder.name}").get_json()["manifest"]["measurement"] == measurement
+    saved = client.get(f"/api/recordings/{folder.name}").get_json()["manifest"]["measurement"]
+    assert saved["metrics"] == measurement["metrics"]
+    assert saved["carry"]["estimated_carry_m"] > 0
     assert store.list_shots() == []

@@ -189,3 +189,10 @@ def carry_metrics(metrics: dict, assumptions: Assumptions | None = None) -> dict
     return {**empty,
             "estimated_carry_m": r.carry_m, "estimated_carry_yd": r.carry_yd,
             "apex_height_m": r.apex_height_m, "flight_time_s": r.flight_time_s}
+
+
+def recording_carry(measurement):
+    """Attach the model result once, keeping the camera measurements intact."""
+    if not measurement.get("metrics") or measurement.get("carry") is not None:
+        return measurement
+    return {**measurement, "carry": carry_metrics(measurement["metrics"])}

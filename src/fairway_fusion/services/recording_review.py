@@ -7,6 +7,8 @@ import math
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from fairway_fusion.analysis.carry import recording_carry
+
 import cv2
 
 from fairway_fusion.cameras.bench import Frame
@@ -148,8 +150,8 @@ def review_measurement(path, manifest):
             and not manifest.get("recording_interrupted") and not measurement.get("metrics")):
         estimate = _recover_saved(path, path.stat().st_mtime_ns)
         if estimate:
-            return {**measurement, **estimate, "reason": None}
-    return measurement
+            measurement = {**measurement, **estimate, "reason": None}
+    return recording_carry(measurement) if manifest.get("status") == "completed" else measurement
 
 
 def review_frames(manifest, measurement=None):
