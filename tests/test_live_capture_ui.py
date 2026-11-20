@@ -116,7 +116,7 @@ def rig(tmp_path, monkeypatch):
     assert sorted(Rig.closed) == sorted(Rig.opened)
 
 
-def test_browser_runs_the_real_workflow_with_camera_and_pico_fakes(rig, tmp_path):
+def test_browser_runs_the_real_workflow_with_camera_and_pico_fakes(rig, tmp_path, monkeypatch):
     app, hardware, worker = rig
     store = app.extensions["shot_store"]
     client = app.test_client()
@@ -187,6 +187,15 @@ def test_browser_runs_the_real_workflow_with_camera_and_pico_fakes(rig, tmp_path
             assert response.status_code == 404
 
     hardware.launch_at = None
+    from fairway_fusion.cameras import locked_bench
+    original_confirm = locked_bench.confirm_ball
+
+    def slow_confirm(*args):
+        time.sleep(.6)
+        return original_confirm(*args)
+
+    monkeypatch.setattr(locked_bench, "VALIDATION_TIMEOUT_NS", 500_000_000)
+    monkeypatch.setattr(locked_bench, "confirm_ball", slow_confirm)
     assert submit(client, "arm").status_code == 303
     second = until(worker, lambda state: state["mode"].startswith("ARM SUCCESSFUL"))
     assert submit(client, "cancel").status_code == 303

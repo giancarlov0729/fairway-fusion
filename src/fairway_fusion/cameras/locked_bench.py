@@ -70,16 +70,18 @@ def _show(frames, regions, images_status, message, scanned_before, *, balls, hin
 
 
 def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_plane, report, *,
-                     recording_store=None, operator=None, client_factory=None):
+                     recording_store=None, operator=None, client_factory=None, references=None, save_reference=None):
     """Run the same capture workflow for desktop preview and the web operator."""
     numbers = tuple(args.cameras)
     dimensions = args.chip_plane_m
     side = args.cameras[0] if args.chip_camera is None else args.chip_camera
-    references, locked, corners = None, None, None
-    scanned_before = False
+    locked, corners = None, None
+    scanned_before = references is not None
     hints, commands = {}, []
     scan_label = "Calibrate" if operator is not None else "Calibrated"
     mode, message = "SETUP", f"Align the unit, clear the hitting area, then click {scan_label}."
+    if references is not None:
+        mode, message = "READY", "Setup calibration loaded. Place one ball and press Arm."
     actions = {ord("e"): "scan", ord("a"): "arm", ord("d"): "cancel", ord("c"): "plane", ord("t"): "test"}
     work, job, samples = None, None, []
     next_sample = next_preview = started_ns = 0
@@ -176,9 +178,9 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                         hints[number] = point
                         message = "Test click set. Press Arm to validate, or R to clear test clicks."
 
-            if work and now - started_ns >= VALIDATION_TIMEOUT_NS:
-                if job is not None:
-                    job.cancel()
+            # The deadline bounds sampling and retries. A submitted image check
+            # must finish before its result can be accepted or another can start.
+            if work and job is None and now - started_ns >= VALIDATION_TIMEOUT_NS:
                 mode, message = "NOT READY", (
                     f"{validation_hint} Press Arm to try again." if work == "arm" and validation_hint else
                     "Validation timed out. Check both camera feeds and try again."
@@ -198,6 +200,8 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                 try:
                     result = job.result()
                     if work == "scan":
+                        if save_reference is not None:
+                            save_reference(result)
                         references = result
                         mode, message = "READY", "Empty area saved. Place one ball inside the boxes, then press Arm."
                     elif all(result.present(frame) for frame in frames):
@@ -314,7 +318,6 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                     continue
                 elif command == "scan":
                     scanned_before = True
-                    references = None
                     hints.clear()
                     work, samples, started_ns, next_sample = "scan", [], now, now
                     mode, message = "SCANNING", "Keep the mat empty and the unit still."

@@ -1,13 +1,16 @@
 """Run the shared ball-lock workflow for Flask without a desktop window."""
 
 from contextlib import ExitStack
+import json
 import logging
 from pathlib import Path
 from threading import Event, Lock, Thread
 import time
 from types import SimpleNamespace
+from zipfile import BadZipFile
 
 import cv2
+import numpy as np
 
 from fairway_fusion.cameras.ball_lock import StereoZone
 from fairway_fusion.cameras.bench import Frame, FrameBuffer, open_bench_cameras, read_requests
@@ -112,6 +115,21 @@ class LiveCapture:
                 self._thread = Thread(target=self._run, name="fairway-live-capture", daemon=True)
                 self._thread.start()
 
+    def _load_reference(self, path, layout, regions):
+        try:
+            with np.load(path, allow_pickle=False) as saved:
+                if saved["layout"].item() != layout:
+                    return None
+                references = {number: saved[str(number)] for number in regions}
+            if all(ref.dtype == np.uint8 and ref.shape == (regions[n][3], regions[n][2])
+                   for n, ref in references.items()):
+                return references
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, KeyError, EOFError, BadZipFile):
+            logger.warning("Could not load the saved empty-mat reference", exc_info=True)
+        return None
+
     def _run(self):
         try:
             camera_type = self.camera_type
@@ -144,9 +162,19 @@ class LiveCapture:
                     return tuple(Frame(number, time.monotonic_ns(), image, metadata, None)
                                  for number, (image, metadata) in zip(numbers, read_requests(jobs)))
 
+                path = self.output.parent / "empty-mat.npz"
+                layout = json.dumps([settings, regions], sort_keys=True)
+
+                def save_reference(references):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = path.with_suffix(".tmp.npz")
+                    np.savez_compressed(temporary, layout=layout, **{str(n): ref for n, ref in references.items()})
+                    temporary.replace(path)
+
                 run_locked_bench(args, settings, regions, stereo, FrameBuffer(max_frames=480),
                                  read_pair, None, self._saved_message, recording_store=self.recordings,
-                                 operator=self, client_factory=self.client_factory)
+                                 operator=self, client_factory=self.client_factory,
+                                 references=self._load_reference(path, layout, regions), save_reference=save_reference)
         except Exception as error:
             logger.exception("Live capture stopped")
             with self._lock:
