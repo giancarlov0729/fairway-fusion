@@ -9,7 +9,10 @@ import numpy as np
 import pytest
 
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
-from fairway_fusion.cameras.chip import TeeDeparture, calibrate_plane, measure_chip, measure_image_motion, recover_short_chip
+from fairway_fusion.cameras.chip import (
+    TeeDeparture, calibrate_plane, measure_ball_scaled_flight, measure_chip, measure_image_motion,
+    recover_short_chip,
+)
 from fairway_fusion.cameras.impact import ImpactRecorder
 from fairway_fusion.hardware.pico_client import PicoRejected
 
@@ -151,6 +154,52 @@ def test_two_point_motion_reports_only_average_image_displacement():
     assert motion["fit_max_error_px"] is None
     assert motion["speed_px_s"] == pytest.approx(5297, abs=2)
     assert motion["angle_deg"] == pytest.approx(33, abs=.1)
+
+
+def test_automatic_ball_scale_uses_sensor_timing_and_rejects_a_late_jump():
+    tee = {"center": (200, 250), "radius": 20}
+    track = {
+        "flight_sensor_timestamps_ns": [1_020_000_000, 1_040_000_000, 1_060_000_000, 1_080_000_000],
+        "flight_centers_px": [(240, 230), (280, 210), (320, 190), (340, 130)],
+        "flight_radii_px": [20, 21, 20, 20],
+    }
+    shot = measure_ball_scaled_flight(0, track, tee)
+    assert shot["method"] == "ball_diameter_side_view"
+    assert shot["status"] == "estimated"
+    assert shot["sample_count"] == 3
+    assert shot["metrics"]["speed_m_s"] == pytest.approx(2.385, abs=.001)
+    assert shot["metrics"]["launch_angle_deg"] == pytest.approx(26.565, abs=.001)
+    assert shot["flight_sensor_timestamps_ns"] == track["flight_sensor_timestamps_ns"][:3]
+    assert shot["scale_ball_diameter_px"] == 40
+
+
+@pytest.mark.parametrize(("centers", "radii"), [
+    ([(240, 230), (280, 210)], [20, 20]),
+    ([(240, 100), (280, 80), (320, 60)], [20, 20, 20]),
+    ([(240, 230), (280, 210), (320, 190)], [20, 30, 40]),
+])
+def test_automatic_scale_requires_a_consistent_departure(centers, radii):
+    track = {
+        "flight_sensor_timestamps_ns": [1_020_000_000 + i * 20_000_000 for i in range(len(centers))],
+        "flight_centers_px": centers,
+        "flight_radii_px": radii,
+    }
+    shot = measure_ball_scaled_flight(0, track, {"center": (200, 250), "radius": 20})
+    assert shot["status"] == "rejected"
+    assert shot["metrics"] is None
+
+
+def test_ball_scale_on_lab_recording_uses_corrected_airborne_positions():
+    # Camera A of c60ef952, re-tracked from the original Pi frames.
+    track = {
+        "flight_sensor_timestamps_ns": [2546854573000, 2546871225000, 2546887876000, 2546904528000],
+        "flight_centers_px": [(300, 186), (376, 134), (440, 92), (497, 64)],
+        "flight_radii_px": [24, 24, 25, 20],
+    }
+    shot = measure_ball_scaled_flight(0, track, {"center": (185, 280), "radius": 25})
+    assert shot["sample_count"] == 4
+    assert shot["metrics"]["speed_m_s"] == pytest.approx(3.955, abs=.002)
+    assert shot["metrics"]["launch_angle_deg"] == pytest.approx(31.919, abs=.002)
 
 
 @pytest.mark.parametrize("rising", [False, True])

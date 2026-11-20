@@ -70,42 +70,11 @@
 .recording-filter {
   margin:12px 0
 }
-.side-plane {
-  border-top:1px solid var(--line);
-  margin-top:18px;
-  padding-top:14px
-}
-.side-plane summary {
-  font-weight:650;
-  cursor:pointer
-}
-.plane-fields,.recording-metrics {
+.recording-metrics {
   display:grid;
   grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
   gap:10px;
-  margin:12px 0
-}
-.plane-fields fieldset {
-  min-inline-size:0;
-  border:1px solid var(--line);
-  border-radius:8px
-}
-.plane-fields label,.plane-dimensions label {
-  display:inline-flex;
-  align-items:center;
-  gap:5px;
-  margin:2px 3px
-}
-.plane-fields input,.plane-dimensions input {
-  width:5.5ch;
-  min-width:58px;
-  padding:4px;
-  border:1px solid var(--line);
-  background:#fffef8;
-  color:var(--ink);
-  border-radius:4px
-}
-.recording-metrics {
+  margin:12px 0;
   max-width:420px
 }
 .recording-metrics>div {

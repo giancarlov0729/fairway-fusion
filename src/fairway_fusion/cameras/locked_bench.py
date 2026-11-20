@@ -11,7 +11,9 @@ from fairway_fusion.cameras.ball_lock import (
     ARM_SAMPLES, SCAN_SAMPLES, BallValidationError, LockError, confirm_ball, scan_empty_area,
     track_locked_flight,
 )
-from fairway_fusion.cameras.chip import calibrate_plane, measure_chip, measure_image_motion
+from fairway_fusion.cameras.chip import (
+    calibrate_plane, measure_ball_scaled_flight, measure_chip, measure_image_motion,
+)
 from fairway_fusion.cameras.impact import ImpactRecorder, PICO_ARM_WINDOW_S
 from fairway_fusion.storage import SessionStateError
 
@@ -24,7 +26,7 @@ VALIDATION_TIMEOUT_NS = 4_000_000_000
 LOSS_GRACE_NS = 350_000_000
 
 
-def preview_image(frames, regions, *, balls, hints):
+def preview_image(frames, regions, *, balls, hints, show_ball_scale=False):
     panels = []
     for label, frame in zip(("A", "B"), frames):
         image = cv2.cvtColor(frame.image, cv2.COLOR_GRAY2BGR)
@@ -36,6 +38,13 @@ def preview_image(frames, regions, *, balls, hints):
         if frame.camera in balls:
             ball = balls[frame.camera]
             cv2.circle(image, ball["center"], ball["radius"], (0, 255, 0), 2)
+            if show_ball_scale:
+                cx, cy = ball["center"]
+                radius = ball["radius"]
+                color = (135, 255, 145)
+                cv2.rectangle(image, (cx - radius, cy - radius), (cx + radius, cy + radius), color, 1)
+                cv2.putText(image, "Ball scale", (max(0, cx - radius), max(14, cy - radius - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, .45, color, 1, cv2.LINE_AA)
         panels.append(image)
     return np.hstack(panels)
 
@@ -103,12 +112,22 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
         if not any(track["flight_observations"] for track in tracking.values()):
             result = {"metrics": None, "reason": "No ball departure confirmed near the microphone event. Check the view and microphone, then re-arm."}
         elif corners is None:
-            side_label = "Camera A" if side == numbers[0] else "Camera B"
-            result = {"metrics": None, "reason": f"Set a measured side plane in {side_label} before the next shot to calculate ball speed and launch angle."}
+            result = measure_ball_scaled_flight(side, tracking[side], locked.balls[side])
+            if not result.get("metrics"):
+                for number in numbers:
+                    if number == side:
+                        continue
+                    alternate = measure_ball_scaled_flight(number, tracking[number], locked.balls[number])
+                    if alternate.get("metrics"):
+                        result = alternate
+                        break
         elif not tracking[side]["flight_observations"]:
             result = {"metrics": None, "reason": "The ball moved in the other view. Keep the early flight visible in the calibrated camera and try again."}
         else:
             result = measure_chip(frames, side, event_ns, corners, *dimensions)
+        if not result.get("metrics") and any(track["status"] == "sampling_gap" for track in tracking.values()):
+            result["reason"] = ("A camera dropped frames during the ball's departure. "
+                                "Keep the ball in view and try another shot.")
         return {**result, "locked_flight_tracks": tracking, "image_motion": image_motion}
 
     with ExitStack() as stack:
@@ -247,8 +266,9 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                                  busy=bool(work or recorder.active), measuring=corners is not None,
                                  capture_id=recorder.capture_id if recorder.active else None,
                                  last_capture=last_capture, stereo=stereo is not None)
-                if now >= next_preview:
-                    operator.save_preview(preview_image(frames, regions, balls=visible, hints=hints))
+                if now >= next_preview and recorder.state != "RECORDING":
+                    operator.save_preview(preview_image(frames, regions, balls=visible, hints=hints,
+                                                        show_ball_scale=corners is None))
                     next_preview = now + 500_000_000
                 submitted = operator.take_commands()
             else:

@@ -159,6 +159,8 @@ class LiveCapture:
     def _saved_message(folder, manifest):
         measurement = manifest.get("measurement", {})
         if measurement.get("metrics"):
+            if measurement.get("method") == "ball_diameter_side_view":
+                return "Clip and automatic shot estimates saved"
             return "Clip, ball speed and launch angle saved"
         if measurement.get("image_motion"):
             return "Clip and camera motion saved"

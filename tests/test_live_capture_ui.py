@@ -205,13 +205,16 @@ def test_disabled_live_page_and_empty_recordings_do_not_touch_hardware(tmp_path)
     assert client.get("/recordings/" + "1" * 32).status_code == 404
 
 
-def test_uncalibrated_shot_shows_measured_camera_motion(rig):
+def test_live_shot_uses_ball_scale_without_a_manual_plane(rig):
     app, hardware, worker = rig
     store = app.extensions["shot_store"]
     client = app.test_client()
     assert submit(client, "start").status_code == 303
     assert submit(client, "scan").status_code == 303
     until(worker, lambda state: state["calibrated"] and not state["busy"])
+    preview = client.get("/live").text
+    assert "Keep the cameras level" in preview
+    assert "Save side plane" not in preview and "/actions/live-plane" not in preview
     hardware.ball.set()
     assert submit(client, "arm").status_code == 303
     armed = until(worker, lambda state: state["mode"].startswith("ARM SUCCESSFUL"))
@@ -220,19 +223,30 @@ def test_uncalibrated_shot_shows_measured_camera_motion(rig):
     until(worker, lambda state: state["last_capture"] == capture_id and not state["busy"])
     _, manifest = read_manifest(store, store.get_capture(capture_id))
     measurement = manifest["measurement"]
-    assert measurement["metrics"] is None
-    motion = measurement["image_motion"][0]
-    assert motion["speed_px_s"] == pytest.approx(2908, rel=.07)
-    assert motion["angle_deg"] == pytest.approx(21.8, abs=2)
-    assert motion["horizontal"] == "right"
+    assert measurement["method"] == "ball_diameter_side_view"
+    assert measurement["metrics"]["speed_m_s"] == pytest.approx(2.82, rel=.10)
+    assert measurement["metrics"]["launch_angle_deg"] == pytest.approx(21.8, abs=2)
     page = client.get("/live").text
-    assert "Ball speed and launch angle unavailable" in page
-    assert "Image speed" in page and "px/s" in page
-    assert "Set the measurement scale for your next shot" in page
-    recording = client.get(f"/recordings/{capture_id}?frames=used&camera=A")
+    assert "Automatic side-view estimate · Camera" in page
+    assert "Estimated speed" in page and "m/s" in page
+    assert "Side-view angle" in page and "ball’s diameter at rest" in page
+    recording = client.get(f"/recordings/{capture_id}?frames=used")
     assert "Used in calculation" in recording.text and "/detection" in recording.text
 
-    del measurement["image_motion"]
+    # Old recordings omitted the airborne radii in their summary, but the
+    # timestamped frame overlays provide those radii without changing files.
+    tracks = measurement["locked_flight_tracks"]
+    for track in tracks.values():
+        track.pop("flight_radii_px")
+    old = {"metrics": None, "reason": "Set a measured side plane before the next shot.",
+           "locked_flight_tracks": tracks}
+    manifest["measurement"] = old
     legacy = recording_measurement(manifest)
-    assert legacy["image_motion"][0] == motion
-    assert sum(frame["used"] for frame in review_frames(manifest) if frame["camera"] == 0) == motion["sample_count"]
+    assert legacy["metrics"] == measurement["metrics"]
+    assert old["metrics"] is None
+    assert sum(frame["used"] for frame in review_frames(manifest)) == legacy["sample_count"]
+
+    for track in tracks.values():
+        if track["flight_centers_px"]:
+            track["flight_centers_px"][0][0] += 1
+    assert recording_measurement(manifest)["metrics"] is None

@@ -58,15 +58,17 @@ with the desktop bench. Set `FAIRWAY_STEREO_PROFILE` to a
 measured 640×480 hitting-zone profile to enable physical position verification.
 The default checks ball appearance in both views.
 
-1. Start a session and open the camera preview. For speed and elevation estimates,
-   enter the four pixel corners and measured dimensions of a side-plane rectangle.
-   Repeat side-plane setup if the camera moves or the server restarts.
-2. Remove the calibration target and ball. Click **Calibrate** to scan the empty
-   hitting area. Place one ball inside the outlined areas and click **Arm**.
+1. Start a session and open the camera preview. Keep the cameras level and aim
+   them across the ball's path.
+2. Click **Calibrate** with the hitting area empty. Place one ball inside the
+   outlined areas and click **Arm**. The preview marks the confirmed ball used
+   to set the scale.
 3. Wait for **Arm successful**. Hit during the Pico's countdown or use
    **Cancel / disarm**. Use **Refresh status** to check progress on demand.
 4. The latest attempt appears below the controls with a playable preview when
-   supported and a provisional speed and elevation estimate when the fit passes.
+   supported. When the flight fit passes, the known ball diameter and recorded
+   frame times give an approximate side-view speed and angle. Accuracy depends
+   on camera alignment and how much the ball's distance from the camera changes.
    **Recordings** lists saved attempts by session. Its frame browser can show all
    images, ball detections, or only the flight frames used for the calculation.
    The overlay is rendered separately so the original PNG stays available.

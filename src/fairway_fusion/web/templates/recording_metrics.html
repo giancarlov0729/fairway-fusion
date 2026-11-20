@@ -1,12 +1,16 @@
 {% set estimate = review.measurement.get('metrics') %}
 {% if estimate %}
-<p class="muted">Provisional chip estimate · Calibrated side view</p>
+{% set automatic = review.measurement.get('method') == 'ball_diameter_side_view' %}
+<p class="muted">{% if automatic %}Automatic side-view estimate · Camera {{ review.camera_labels.get(review.measurement.camera, '?') }}{% else %}Provisional chip estimate · Calibrated side view{% endif %}</p>
 <div class="recording-metrics">
-  <div><span class="cap">Ball speed</span><div class="fig">{{ num(estimate.speed_m_s, 2) }} <small>m/s</small></div></div>
-  <div><span class="cap">Launch angle</span><div class="fig">{{ num(estimate.launch_angle_deg) }}<small>°</small></div></div>
+  <div><span class="cap">{{ 'Estimated speed' if automatic else 'Ball speed' }}</span><div class="fig">{{ num(estimate.speed_m_s, 1 if automatic else 2) }} <small>m/s</small></div></div>
+  <div><span class="cap">{{ 'Side-view angle' if automatic else 'Launch angle' }}</span><div class="fig">{{ num(estimate.launch_angle_deg, 0 if automatic else 1) }}<small>°</small></div></div>
 </div>
 {% if review.measurement.get('sample_count') and review.measurement.get('fit_max_error_m') is not none %}
 <p class="muted small">{{ review.measurement.sample_count }} airborne frames · maximum fit error {{ num(review.measurement.fit_max_error_m * 1000, 1) }} mm</p>
+{% endif %}
+{% if automatic %}
+<p class="muted small">Scale comes from the ball’s diameter at rest. Estimates assume a level camera and a shot traveling across its view at roughly the same distance.</p>
 {% endif %}
 {% elif review.measurement.get('reason') %}
 <p><strong>Ball speed and launch angle unavailable</strong></p>

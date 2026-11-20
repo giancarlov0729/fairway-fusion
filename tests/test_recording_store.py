@@ -76,7 +76,16 @@ def test_pico_attempt_persists_metadata_and_reports(store, outcome):
     assert not recorder.arm()
     recorder._thread.join(timeout=3)
     assert not recorder._thread.is_alive()
-    saved = recorder.tick() or recorder.tick(time.monotonic_ns() + 2_000_000_000)
+    saved = recorder.tick()
+    if outcome == "completed":
+        assert saved is None
+        assert recorder.state == "RECORDING"
+        pending = store.get_capture(recorder.capture_id)
+        assert pending["status"] == "armed"
+        assert pending["pico_report"] is None
+        attempt = json.loads((store.images_root / "clips" / recorder.capture_id / "attempt.json").read_text())
+        assert attempt["status"] == "armed"
+        saved = recorder.tick(time.monotonic_ns() + 2_000_000_000)
     folder, manifest = saved
     row = ShotStore(store.path).get_capture(folder.name)
     assert row["session_id"] == session["id"]

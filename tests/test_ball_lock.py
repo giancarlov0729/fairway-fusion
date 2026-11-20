@@ -198,6 +198,39 @@ def test_flight_recovers_a_ball_darker_than_the_background(references):
     assert frames[-2].ball["center"] == pytest.approx((575, 208), abs=3)
 
 
+def test_flight_prediction_uses_sensor_time_when_host_delivery_is_bursty(references):
+    lock = confirm(sequence(TEE), references)
+    impact_ns = 1_000_000_000
+    frames = [frame for i in range(-6, 1) for frame in make_pair(impact_ns + i * 16_000_000, TEE)]
+    for i, host_delay_ms in enumerate((16, 17, 49), 1):
+        positions = tuple((x + 35 * i, y - 20 * i) for x, y in TEE)
+        pair = make_pair(impact_ns + i * 16_000_000, positions)
+        for frame in pair:
+            frame.host_ns = impact_ns + host_delay_ms * 1_000_000 + frame.camera * 1_000_000
+        frames.extend(pair)
+
+    tracked = track_locked_flight(frames, lock, impact_ns, 6, 56)
+
+    for number, (x, y) in zip(CAMERAS, TEE):
+        assert tracked[number]["flight_centers_px"][-1] == pytest.approx((x + 105, y - 60), abs=2)
+        assert tracked[number]["flight_radii_px"] == pytest.approx([22, 22, 22], abs=2)
+
+
+def test_flight_reports_sampling_gap_after_only_one_airborne_frame(references):
+    lock = confirm(sequence(TEE), references)
+    impact_ns = 1_000_000_000
+    frames = [frame for i in range(-6, 1) for frame in make_pair(impact_ns + i * 16_000_000, TEE)]
+    positions = tuple((x + 60, y - 30) for x, y in TEE)
+    frames.extend(make_pair(impact_ns + 16_000_000, positions))
+    frames.extend(make_pair(impact_ns + 149_000_000))
+
+    tracked = track_locked_flight(frames, lock, impact_ns, 6, 56)
+
+    assert all(view["status"] == "sampling_gap" and view["flight_observations"] == 0
+               for view in tracked.values())
+    assert all(frame.ball is None for frame in frames[-4:])
+
+
 def test_preview_uses_one_arm_request_and_retries_an_empty_area(monkeypatch, tmp_path):
     clock = 0
     frame_index = 0

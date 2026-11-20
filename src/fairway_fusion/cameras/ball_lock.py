@@ -15,6 +15,7 @@ from fairway_fusion.detection.ball_detector import detect_ball_candidates
 SCAN_SAMPLES = 7
 ARM_SAMPLES = 5
 BALL_DIAMETER_M = .04267
+MAX_FLIGHT_INTERVAL_S = .075
 _ANGLES = np.linspace(0, 2 * np.pi, 48, endpoint=False)
 _RIM = np.stack((np.cos(_ANGLES), np.sin(_ANGLES)))
 _DX, _DY = np.meshgrid(np.arange(-.7, .71, .175), np.arange(-.7, .71, .175))
@@ -320,10 +321,13 @@ def track_locked_flight(frames, lock, event_ns, min_radius, max_radius):
                 break
             if not flight and lock.present(frame):
                 frame.ball = tee
-                last_seen_on_tee = frame.host_ns
+                last_seen_on_tee = frame
             elif (elapsed >= -220_000_000 and previous is not None
                   and (flight or (last_seen_on_tee is not None
-                                  and frame.host_ns - last_seen_on_tee <= 95_000_000))):
+                                  and frame.host_ns - last_seen_on_tee.host_ns <= 95_000_000))):
+                if flight and _frame_interval(frame, previous) > MAX_FLIGHT_INTERVAL_S:
+                    status = "sampling_gap"
+                    break
                 candidate = _flight_candidate(frame, previous, flight, tee, last_seen_on_tee,
                                               min_radius, max_radius)
                 if candidate is None:
@@ -339,7 +343,7 @@ def track_locked_flight(frames, lock, event_ns, min_radius, max_radius):
         if len(flight) >= 2:
             for frame, candidate in flight:
                 frame.ball = candidate
-        else:
+        elif status != "sampling_gap":
             status = "no_departure_confirmed"
         summaries[number] = {
             "status": status,
@@ -350,14 +354,26 @@ def track_locked_flight(frames, lock, event_ns, min_radius, max_radius):
             "flight_centers_px": [
                 list(candidate["center"]) for _, candidate in flight
             ] if len(flight) >= 2 else [],
+            "flight_radii_px": [
+                candidate["radius"] for _, candidate in flight
+            ] if len(flight) >= 2 else [],
         }
     return summaries
 
 
+def _frame_interval(frame, earlier):
+    """Use the same camera's sensor clock for motion, independent of delivery jitter."""
+    now = frame.metadata.get("SensorTimestamp")
+    before = earlier.metadata.get("SensorTimestamp")
+    if type(now) is int and type(before) is int and min(now, before) > 0:
+        return (now - before) / 1e9
+    return (frame.host_ns - earlier.host_ns) / 1e9
+
+
 def _flight_candidate(frame, previous, flight, tee, last_seen_on_tee, min_radius, max_radius):
     last_frame, last = flight[-1] if flight else (previous, tee)
-    dt = (frame.host_ns - last_frame.host_ns) / 1e9
-    if not 0 < dt <= .075:
+    dt = _frame_interval(frame, last_frame)
+    if not 0 < dt <= MAX_FLIGHT_INTERVAL_S:
         return None
     center = np.array(last["center"], dtype=float)
     radius = last["radius"]
@@ -365,7 +381,7 @@ def _flight_candidate(frame, previous, flight, tee, last_seen_on_tee, min_radius
     # acquisition reach on the time since its last confirmed tee observation.
     heading = None
     if not flight:
-        since_tee = (frame.host_ns - last_seen_on_tee) / 1e9
+        since_tee = _frame_interval(frame, last_seen_on_tee)
         reach = radius * min(16, max(6, 400 * since_tee))
     elif len(flight) == 1:
         reach = radius * min(12, max(2.8, 400 * dt))
@@ -373,7 +389,7 @@ def _flight_candidate(frame, previous, flight, tee, last_seen_on_tee, min_radius
     else:
         reach = 2.8 * radius
         older_frame, older = flight[-2]
-        interval = (last_frame.host_ns - older_frame.host_ns) / 1e9
+        interval = _frame_interval(last_frame, older_frame)
         if interval > 0:
             center += (center - older["center"]) * (dt / interval)
     height, width = frame.image.shape

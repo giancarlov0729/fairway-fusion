@@ -7,7 +7,7 @@ from tempfile import NamedTemporaryFile
 
 import cv2
 
-from fairway_fusion.cameras.chip import measure_image_motion
+from fairway_fusion.cameras.chip import measure_ball_scaled_flight, measure_image_motion
 from fairway_fusion.cameras.recording_store import recording_frame_path
 
 
@@ -35,13 +35,8 @@ def frame_labels(manifest):
     return {number: chr(ord("A") + index) for index, number in enumerate(cameras)}
 
 
-def recording_measurement(manifest):
+def _legacy_image_motion(manifest, tracks, resting):
     """Recover image-motion evidence for recordings saved before it was stored."""
-    measurement = manifest.get("measurement") or {}
-    tracks = measurement.get("locked_flight_tracks") or {}
-    if "image_motion" in measurement or not tracks:
-        return measurement
-    resting = (manifest.get("ball_lock") or {}).get("camera_candidates") or {}
     motion = []
     for camera in frame_labels(manifest):
         track = tracks.get(str(camera), {})
@@ -61,10 +56,63 @@ def recording_measurement(manifest):
             fit = measure_image_motion(camera, times, centers)
             if fit is not None:
                 motion.append(fit)
-    if (not measurement.get("metrics") and not measurement.get("corners_px")
-            and any(track.get("flight_observations") for track in tracks.values())):
-        measurement = {**measurement, "reason": "This recording has no measured side plane for calculating ball speed and launch angle."}
-    return {**measurement, "image_motion": motion}
+    return motion
+
+
+def _saved_ball_estimate(manifest, tracks, resting):
+    """Only reuse flight samples whose timestamps and centers match the saved detections."""
+    detected_by_time = {}
+    for frame in manifest["frames"]:
+        camera = frame.get("camera")
+        timestamp = (frame.get("metadata") or {}).get("SensorTimestamp")
+        point = detection(frame)
+        if type(camera) is int and type(timestamp) is int and point is not None:
+            detected_by_time[(camera, timestamp)] = point
+
+    for camera in frame_labels(manifest):
+        track = tracks.get(str(camera), {})
+        times = track.get("flight_sensor_timestamps_ns") or []
+        centers = track.get("flight_centers_px") or []
+        tee = resting.get(str(camera))
+        if (track.get("status") not in ("tracked", "track_ended") or not isinstance(times, list)
+                or not isinstance(centers, list) or len(times) < 3
+                or len(times) != len(centers) or len(times) != track.get("flight_observations")):
+            continue
+        if detection({"ball_candidate": tee}) is None:
+            continue
+        radii = []
+        for stamp, center in zip(times, centers):
+            if type(stamp) is not int or not isinstance(center, (list, tuple)):
+                break
+            point = detected_by_time.get((camera, stamp))
+            if point is None or point[0] != tuple(center):
+                break
+            radii.append(point[1])
+        if len(radii) == len(times):
+            estimate = measure_ball_scaled_flight(camera, {**track, "flight_radii_px": radii}, tee)
+            if estimate["metrics"]:
+                return estimate
+    return None
+
+
+def recording_measurement(manifest):
+    """Review existing evidence without rewriting the recording or its frames."""
+    measurement = manifest.get("measurement") or {}
+    tracks = measurement.get("locked_flight_tracks") or {}
+    if not tracks:
+        return measurement
+    resting = (manifest.get("ball_lock") or {}).get("camera_candidates") or {}
+    if "image_motion" not in measurement:
+        measurement = {**measurement, "image_motion": _legacy_image_motion(manifest, tracks, resting)}
+    if (manifest.get("status") != "completed" or measurement.get("metrics")
+            or measurement.get("method") or measurement.get("corners_px") or not resting):
+        return measurement
+    estimate = _saved_ball_estimate(manifest, tracks, resting)
+    if estimate is not None:
+        return {**measurement, **estimate, "reason": None}
+    if "side plane" in (measurement.get("reason") or "").lower():
+        return {**measurement, "reason": "This recording lacks a verified flight track for an automatic speed and angle estimate."}
+    return measurement
 
 
 def review_frames(manifest, measurement=None):

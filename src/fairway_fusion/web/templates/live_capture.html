@@ -19,8 +19,8 @@
   </div>
   {% if live.preview %}
   <img class="live-preview" src="{{ url_for('live_preview') }}" width="1280" height="480"
-       alt="Camera A and Camera B with the hitting areas outlined">
-  <p class="muted small">{{ 'Stereo profile loaded' if live.stereo else 'Two-view ball check' }} · {{ 'Shot measurement scale set' if live.measuring else 'Set the measurement scale to see ball speed and launch angle' }}</p>
+       alt="Camera A and Camera B with the hitting areas and the confirmed ball outlined">
+  <p class="muted small">Keep the cameras level and aimed across the ball’s path. The preview marks the ball used to set the scale once it locks.</p>
   {% endif %}
   {% if live.capture_id %}<p class="muted small capture-id">Capture {{ live.capture_id }}</p>{% endif %}
   <div class="row">
@@ -37,27 +37,6 @@
     <form method="post" action="{{ url_for('page_action', action='live-end') }}">{{ fields() }}<button class="btn" {% if live.busy %}disabled{% endif %}>End session</button></form>
     {% endif %}
   </div>
-  {% if live.preview %}
-  <details class="side-plane">
-    <summary>Set up ball speed and launch angle</summary>
-    <p class="muted">Place a measured rectangle upright in the plane the ball will travel through. Enter its actual width and height and the four corner coordinates from Camera A, the left half of the <a href="{{ url_for('live_preview') }}" target="_blank" rel="noopener">original preview</a>. Save the side plane, remove the target, then scan the empty hitting area. Repeat this setup if the cameras move or the server restarts.</p>
-    <form id="shot-measurement-setup" method="post" action="{{ url_for('page_action', action='live-plane') }}">{{ fields() }}
-      <div class="plane-fields">
-        {% for corner in ('Top left','Top right','Bottom right','Bottom left') %}
-        <fieldset><legend>{{ corner }}</legend>
-          <label>X <input name="x{{ loop.index0 }}" required type="number" min="0" max="639" inputmode="numeric"></label>
-          <label>Y <input name="y{{ loop.index0 }}" required type="number" min="0" max="479" inputmode="numeric"></label>
-        </fieldset>
-        {% endfor %}
-      </div>
-      <div class="row plane-dimensions">
-        <label>Width (m) <input name="width_m" type="number" required min=".01" step="any" value=".60"></label>
-        <label>Height (m) <input name="height_m" type="number" required min=".01" step="any" value=".30"></label>
-        <button class="btn" {% if live.busy %}disabled{% endif %}>Save side plane</button>
-      </div>
-    </form>
-  </details>
-  {% endif %}
 </article>
 {% if review %}
 <article class="panel live-result">
@@ -66,9 +45,6 @@
     <a class="btn" href="{{ url_for('recordings_page', capture_id=review.capture.capture_id) }}">Inspect frames</a>
   </div>
   {% include 'recording_metrics.html' %}
-  {% if live.preview and not live.measuring and not review.measurement.get('metrics') %}
-  <p><a href="#shot-measurement-setup">Set the measurement scale for your next shot</a></p>
-  {% endif %}
   {% include 'recording_player.html' %}
   {% if not review.manifest %}<p class="muted">No playable footage was saved for this attempt.</p>{% endif %}
 </article>

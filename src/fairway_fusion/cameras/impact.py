@@ -179,8 +179,6 @@ class ImpactRecorder:
                 self._trigger_ns = observed_ns
                 if kind == "test_source":
                     self._details["trigger_source"] = "pico_test_command"
-                if self.recording_store:
-                    self.recording_store.update(self.capture_id, status="capturing")
             elif kind == "terminal":
                 self._details.update(payload)
                 if payload["failure_reason"]:
@@ -192,10 +190,6 @@ class ImpactRecorder:
                     "Pico boot microseconds and camera SensorTimestamp are separate clock domains.")
                 self._deadline = now_ns + (1_000_000_000 if payload["status"] == "completed" else 0)
                 self.state = "RECORDING" if payload["status"] == "completed" else payload["status"].upper()
-                self._persist()
-                if self.recording_store:
-                    self.recording_store.update(self.capture_id, pico_report=payload["pico_report"],
-                                                error=payload["failure_reason"])
         if self._deadline is not None and now_ns >= self._deadline:
             return self._save()
         return None
@@ -203,6 +197,9 @@ class ImpactRecorder:
     def _save(self):
         # FrameBuffer writes manifest last. A failed save keeps attempt.json.
         try:
+            # Keep disk and SQLite writes out of the post-impact acquisition window.
+            # finish() publishes metadata and the terminal database status together.
+            self._persist()
             if (self.measure is not None and self._details["status"] == "completed"
                     and not self._details.get("recording_interrupted")
                     and self._details["trigger_source"] == "pico_microphone"):

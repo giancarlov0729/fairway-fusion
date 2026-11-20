@@ -1,4 +1,4 @@
-"""Measure a short chip that stays in a calibrated vertical plane."""
+"""Estimate early ball flight from a side view and sensor timestamps."""
 
 from collections import deque
 from itertools import product
@@ -9,6 +9,7 @@ import numpy as np
 
 from fairway_fusion.analysis.launch_angle import launch_metrics
 from fairway_fusion.analysis.velocity import estimate_velocity
+from fairway_fusion.cameras.ball_lock import BALL_DIAMETER_M
 
 
 def calibrate_plane(corners, width_m, height_m):
@@ -188,6 +189,62 @@ def measure_image_motion(camera, sensor_timestamps_ns, centers_px):
             "horizontal": "right" if vx > 0 else "left" if vx < 0 else None,
             "sample_count": len(stamps), "fit_max_error_px": residual if len(stamps) > 2 else None,
             "flight_sensor_timestamps_ns": list(stamps)}
+
+
+def measure_ball_scaled_flight(camera, track, tee):
+    """Estimate projected flight with meters per pixel at the stationary ball."""
+    result = {"method": "ball_diameter_side_view", "camera": camera,
+              "status": "rejected", "metrics": None}
+    if not tee:
+        return {**result, "reason": "The stationary ball was not measured in this view."}
+    stamps = track.get("flight_sensor_timestamps_ns", ())
+    centers = track.get("flight_centers_px", ())
+    radii = track.get("flight_radii_px", ())
+    if len(stamps) != len(centers) or len(stamps) != len(radii) or len(stamps) < 3:
+        return {**result, "reason": "Need at least three early airborne detections with a measured ball outline."}
+
+    tee_center = np.asarray(tee["center"], dtype=float)
+    tee_radius = float(tee["radius"])
+    if (not np.isfinite(tee_radius) or tee_radius <= 0 or tee_center.shape != (2,)
+            or not np.isfinite(tee_center).all()):
+        return {**result, "reason": "The stationary ball outline could not provide a scale."}
+    meters_per_pixel = BALL_DIAMETER_M / (2 * tee_radius)
+    # Use only the start of the flight. Later points can be obscured by the
+    # enclosure, or seen at a substantially different depth and image scale.
+    for count in range(min(4, len(stamps)), 2, -1):
+        selected_stamps = stamps[:count]
+        selected_centers = np.asarray(centers[:count], dtype=float)
+        selected_radii = np.asarray(radii[:count], dtype=float)
+        if (not all(type(t) is int and t > 0 for t in selected_stamps)
+                or selected_stamps[-1] - selected_stamps[0] > 85_000_000
+                or any(after - before > 55_000_000 for before, after in zip(selected_stamps, selected_stamps[1:]))
+                or selected_centers.shape != (count, 2) or not np.isfinite(selected_centers).all()
+                or not np.all((.73 * tee_radius <= selected_radii) & (selected_radii <= 1.33 * tee_radius))):
+            continue
+        motion = measure_image_motion(camera, selected_stamps, selected_centers)
+        if motion is None:
+            continue
+        path = selected_centers[-1] - selected_centers[0]
+        speed = motion["speed_px_s"]
+        length = np.linalg.norm(path)
+        if length < 2 * tee_radius:
+            continue
+        direction = path / length
+        from_tee = selected_centers[0] - tee_center
+        advance = float(from_tee @ direction)
+        cross_track_error = np.linalg.norm(from_tee - advance * direction)
+        if not (0 < advance <= .095 * speed and cross_track_error <= 1.4 * tee_radius):
+            continue
+        positions = (selected_centers - tee_center) * [meters_per_pixel, -meters_per_pixel]
+        return {**result, "status": "estimated",
+                "metrics": {"speed_m_s": speed * meters_per_pixel,
+                            "launch_angle_deg": motion["angle_deg"]},
+                "sample_count": count, "flight_sensor_timestamps_ns": list(selected_stamps),
+                "flight_centers_px": selected_centers.tolist(), "positions_m": positions.tolist(),
+                "sensor_elapsed_s": [(t - selected_stamps[0]) / 1e9 for t in selected_stamps],
+                "fit_max_error_m": motion["fit_max_error_px"] * meters_per_pixel,
+                "scale_ball_diameter_m": BALL_DIAMETER_M, "scale_ball_diameter_px": 2 * tee_radius}
+    return {**result, "reason": "Early detections did not trace a consistent path from the stationary ball at that scale."}
 
 
 _RIM_ANGLES = np.linspace(0, 2 * np.pi, 48, endpoint=False)
