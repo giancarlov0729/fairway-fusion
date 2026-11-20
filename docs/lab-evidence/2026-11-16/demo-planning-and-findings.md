@@ -1,0 +1,11 @@
+# November 16 Demo Planning and Findings
+
+The IR lighting PCBs were expected Thursday evening, with the practice demo scheduled for Friday around 3 p.m. I evaluated a temporary breadboard circuit and the lab’s conductive-ink PCB printer. Both options added assembly and testing work before Friday, so I planned the demo around steady indoor lighting and equipment we already had.
+
+I refined the team’s assignments and discussed the camera and Pico bring-up with Evan. His commits helped us define three things we could demonstrate and verify independently.
+
+- **Both cameras could provide useful footage.** Evan added a side-by-side preview and manual clip recording. We planned to check that both cameras could see the ball and its first stretch of travel, then review the saved frames for blur and gaps. The saved sensor timestamps gave us a way to check the actual frame cadence against the requested 60 FPS. [Dual-camera preview and recording](https://github.com/giancarlov0729/fairway-fusion/commit/b216f86) · [Camera-first demo plan](https://github.com/giancarlov0729/fairway-fusion/commit/3a77478)
+- **The Pico timing sequence could be tested before the lighting boards were ready.** Evan added a bench test that could arm the controller, send a software test trigger, and save the timing report with the camera and IR trigger outputs disconnected. This gave us a way to verify that the firmware completed its sequence. Optical synchronization would require a later hardware test. [Pico bench timing checks](https://github.com/giancarlov0729/fairway-fusion/commit/3401603)
+- **The microphone wiring and firmware needed to agree.** Evan updated both to use GP7, the input exposed on our assembled Pico. We identified a separate microphone check for lab. Arm the Pico, make a sound, and confirm that the controller reports a capture. This would verify the physical microphone path in addition to the software-triggered timing test. [GP7 firmware update](https://github.com/giancarlov0729/fairway-fusion/commit/f56a369) · [Wiring guide update](https://github.com/giancarlov0729/fairway-fusion/commit/ac417ba)
+
+For Friday, the plan was to show two live camera feeds, save a short clip under indoor lighting, and demonstrate the Pico timing sequence. Speed and launch-angle accuracy, stereo calibration, and synchronized IR timing remained follow-up work.
