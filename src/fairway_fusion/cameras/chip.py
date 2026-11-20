@@ -2,6 +2,7 @@
 
 from collections import deque
 from itertools import product
+import math
 
 import cv2
 import numpy as np
@@ -153,6 +154,40 @@ def _fit_flight(flight, result):
     return {**result, "status": "estimated", "metrics": metrics,
             "sample_count": len(flight), "positions_m": positions[:, [0, 2]].tolist(),
             "sensor_elapsed_s": times.tolist(), "fit_max_error_m": residual}
+
+
+def measure_image_motion(camera, sensor_timestamps_ns, centers_px):
+    """Estimate image motion from accepted tracking points on one camera clock."""
+    samples = [(timestamp, center) for timestamp, center in zip(sensor_timestamps_ns, centers_px)
+               if type(timestamp) is int and timestamp > 0]
+    if len(samples) < 2:
+        return None
+    start_ns = samples[0][0]
+    early = [(timestamp, center) for timestamp, center in samples if timestamp - start_ns <= 120_000_000]
+    if len(early) < 2:
+        return None
+    stamps, centers = zip(*early)
+    times = np.asarray([(t - start_ns) / 1e9 for t in stamps])
+    gaps = np.diff(times)
+    min_span, max_gap = (.008, .055) if len(early) == 2 else (.025, .075)
+    if times[-1] < min_span or np.any(gaps <= 0) or np.any(gaps > max_gap):
+        return None
+    positions = np.asarray(centers, dtype=float)
+    centered_times = times - times.mean()
+    centered_positions = positions - positions.mean(axis=0)
+    vx, vy = velocity = centered_times @ centered_positions / (centered_times @ centered_times)
+    residual = float(np.linalg.norm(centered_positions - centered_times[:, None] * velocity, axis=1).max())
+    speed = math.hypot(vx, vy)
+    span = speed * times[-1]
+    # A long traversal still needs tight agreement in pixels. In a lab clip
+    # the old tracker jumped from the ball to the club shaft and followed it
+    # downrange, giving a large travel span with a visibly wrong angle.
+    if span < 5 or residual > max(3, min(8, span * .08)):
+        return None
+    return {"camera": camera, "speed_px_s": speed, "angle_deg": math.degrees(math.atan2(-vy, abs(vx))),
+            "horizontal": "right" if vx > 0 else "left" if vx < 0 else None,
+            "sample_count": len(stamps), "fit_max_error_px": residual if len(stamps) > 2 else None,
+            "flight_sensor_timestamps_ns": list(stamps)}
 
 
 _RIM_ANGLES = np.linspace(0, 2 * np.pi, 48, endpoint=False)

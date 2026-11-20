@@ -5,7 +5,31 @@
   <div><span class="cap">Ball speed</span><div class="fig">{{ num(estimate.speed_m_s, 2) }} <small>m/s</small></div></div>
   <div><span class="cap">Launch angle</span><div class="fig">{{ num(estimate.launch_angle_deg) }}<small>°</small></div></div>
 </div>
+{% if review.measurement.get('sample_count') and review.measurement.get('fit_max_error_m') is not none %}
+<p class="muted small">{{ review.measurement.sample_count }} airborne frames · maximum fit error {{ num(review.measurement.fit_max_error_m * 1000, 1) }} mm</p>
+{% endif %}
 {% elif review.measurement.get('reason') %}
+<p><strong>Ball speed and launch angle unavailable</strong></p>
 <p class="muted">{{ review.measurement.reason }}</p>
+{% endif %}
+{% if not estimate and review.measurement.get('image_motion') %}
+{% for motion in review.measurement.image_motion %}
+<p class="muted">Camera {{ review.camera_labels.get(motion.camera, '?') }} image motion · {{ motion.sample_count }} airborne frames{% if motion.sample_count == 2 %}, average between detections{% endif %}</p>
+<div class="recording-metrics">
+  <div><span class="cap">Image speed</span><div class="fig">{{ num(motion.speed_px_s, 0) }} <small>px/s</small></div></div>
+  <div><span class="cap">Image angle</span><div class="fig">{{ num(motion.angle_deg) }}<small>°{% if motion.horizontal %} · moving {{ motion.horizontal }}{% endif %}</small></div></div>
+</div>
+{% endfor %}
+<p class="muted small">Image angle is relative to the camera frame. Positive values point up.</p>
+{% elif not estimate and review.measurement.get('locked_flight_tracks') %}
+{% set counts = review.measurement.locked_flight_tracks %}
+<p class="muted small">
+  {% for camera, label in review.camera_labels.items() %}
+  Camera {{ label }} tracked {{ counts.get(camera|string, {}).get('flight_observations', 0) }} airborne frames{% if not loop.last %} · {% endif %}
+  {% endfor %}
+</p>
+{% if counts.values()|selectattr('flight_observations', 'ge', 2)|list %}
+<p class="muted small">The tracked positions didn’t support a consistent image trajectory.</p>
+{% endif %}
 {% endif %}
 {% if review.capture.error %}<p class="notice">{{ review.capture.error }}</p>{% endif %}

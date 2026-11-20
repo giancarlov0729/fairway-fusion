@@ -75,6 +75,25 @@ def test_ambiguous_or_unstable_candidates_require_rearming(references):
     assert lock.balls[0]["center"] == TEE[0]
 
 
+def test_stationary_lock_rejects_textured_round_shoe_detail(references):
+    pairs = sequence(TEE)
+    for pair in pairs:
+        for frame in pair:
+            # The outer edge is deliberately ball-shaped. Interior details
+            # represent the seam/laces that showed up in the lab recordings.
+            cv2.circle(frame.image, (145, 264), 21, 221, -1)
+            for y in range(252, 277, 4):
+                cv2.line(frame.image, (133, y), (157, y), 148, 1)
+    lock = confirm(pairs, references)
+    for number, center in zip(CAMERAS, TEE):
+        assert lock.balls[number]["center"] == pytest.approx(center, abs=2)
+    for pair in pairs:
+        for frame, center in zip(pair, TEE):
+            cv2.circle(frame.image, center, 22, 42, -1)
+    with pytest.raises(LockError, match="No new ball"):
+        confirm(pairs, references)
+
+
 def test_lock_ignores_background_changes_but_detects_removal(references):
     lock = confirm(sequence(TEE), references)
     changed = make_pair(1_000_000_000, TEE, extra=True, backdrop=125)
@@ -161,7 +180,25 @@ def test_flight_survives_a_view_missing_its_first_frame_but_rejects_a_stale_impa
     assert all(view["status"] == "no_departure_confirmed" for view in stale.values())
 
 
-def test_preview_uses_buttons_and_never_arms_empty_area(monkeypatch, tmp_path):
+def test_flight_recovers_a_ball_darker_than_the_background(references):
+    lock = confirm(sequence(TEE), references)
+    frames = []
+    for i in range(-6, 4):
+        positions = TEE if i <= 0 else (None, None)
+        pair = make_pair(1_000_000_000 + i * 16_000_000, positions)
+        for frame, (x, y) in zip(pair, TEE):
+            frame.image[90:300, x + 40:] = 205
+            if i > 0:
+                cv2.circle(frame.image, (x + 85 * i, y - 32 * i), 22, 135, -1)
+        frames.extend(pair)
+
+    tracked = track_locked_flight(frames, lock, 1_000_000_000, 6, 56)
+
+    assert [view["flight_observations"] for view in tracked.values()] == [3, 3]
+    assert frames[-2].ball["center"] == pytest.approx((575, 208), abs=3)
+
+
+def test_preview_uses_one_arm_request_and_retries_an_empty_area(monkeypatch, tmp_path):
     clock = 0
     frame_index = 0
     status = []
@@ -225,7 +262,7 @@ def test_preview_uses_buttons_and_never_arms_empty_area(monkeypatch, tmp_path):
     def keys(delay):
         if frame_index == 1:
             mouse(cv2.EVENT_LBUTTONDOWN, 40, 499, None, None)  # Calibrated
-        if frame_index in (9, 18):
+        if frame_index == 9:
             mouse(cv2.EVENT_LBUTTONDOWN, 240, 499, None, None)  # Arm
         return ord("q") if frame_index == 41 else -1
 
@@ -246,6 +283,6 @@ def test_preview_uses_buttons_and_never_arms_empty_area(monkeypatch, tmp_path):
                                  None, lambda *_: "Capture cancelled")
     assert len(commands) == 1 and commands[0][0] > 18
     assert commands[0][1]["verification"] == "two_view_appearance"
-    assert any("No new ball" in message for _, message in status)
+    assert any("No new ball" in message and "Checking again" in message for _, message in status)
     assert any("ARM SUCCESSFUL" in mode for mode, _ in status)
     assert any("LOCK LOST" in mode for mode, _ in status)

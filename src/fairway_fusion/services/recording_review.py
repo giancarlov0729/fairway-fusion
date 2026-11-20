@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 
 import cv2
 
+from fairway_fusion.cameras.chip import measure_image_motion
 from fairway_fusion.cameras.recording_store import recording_frame_path
 
 
@@ -34,18 +35,54 @@ def frame_labels(manifest):
     return {number: chr(ord("A") + index) for index, number in enumerate(cameras)}
 
 
-def review_frames(manifest):
+def recording_measurement(manifest):
+    """Recover image-motion evidence for recordings saved before it was stored."""
     measurement = manifest.get("measurement") or {}
+    tracks = measurement.get("locked_flight_tracks") or {}
+    if "image_motion" in measurement or not tracks:
+        return measurement
+    resting = (manifest.get("ball_lock") or {}).get("camera_candidates") or {}
+    motion = []
+    for camera in frame_labels(manifest):
+        track = tracks.get(str(camera), {})
+        count = track.get("flight_observations", 0)
+        tee = resting.get(str(camera), {}).get("center")
+        if count < 2 or not tee:
+            continue
+        points = []
+        for frame in manifest["frames"]:
+            if frame.get("camera") != camera:
+                continue
+            point = detection(frame)
+            if point is not None and point[0] != tuple(tee):
+                points.append(((frame.get("metadata") or {}).get("SensorTimestamp"), point[0]))
+        if len(points) == count:
+            times, centers = zip(*points)
+            fit = measure_image_motion(camera, times, centers)
+            if fit is not None:
+                motion.append(fit)
+    if (not measurement.get("metrics") and not measurement.get("corners_px")
+            and any(track.get("flight_observations") for track in tracks.values())):
+        measurement = {**measurement, "reason": "This recording has no measured side plane for calculating ball speed and launch angle."}
+    return {**measurement, "image_motion": motion}
+
+
+def review_frames(manifest, measurement=None):
+    if measurement is None:
+        measurement = recording_measurement(manifest)
     metrics = measurement.get("metrics")
-    used = set(measurement.get("flight_sensor_timestamps_ns") or []) if metrics else set()
+    used = {(measurement.get("camera"), stamp)
+            for stamp in measurement.get("flight_sensor_timestamps_ns") or []} if metrics else set()
+    if not metrics:
+        for motion in measurement.get("image_motion") or []:
+            used.update((motion["camera"], stamp) for stamp in motion["flight_sensor_timestamps_ns"])
     labels = frame_labels(manifest)
     result = []
     for frame in manifest["frames"]:
         point = detection(frame)
         timestamp = (frame.get("metadata") or {}).get("SensorTimestamp")
         result.append({**frame, "label": labels.get(frame.get("camera"), "?"), "time_s": frame_time(frame),
-                       "detection": point, "used": point is not None
-                       and frame.get("camera") == measurement.get("camera") and timestamp in used})
+                       "detection": point, "used": point is not None and (frame.get("camera"), timestamp) in used})
     return result
 
 

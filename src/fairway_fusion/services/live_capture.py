@@ -159,5 +159,7 @@ class LiveCapture:
     def _saved_message(folder, manifest):
         measurement = manifest.get("measurement", {})
         if measurement.get("metrics"):
-            return "Clip and provisional chip estimate saved"
+            return "Clip, ball speed and launch angle saved"
+        if measurement.get("image_motion"):
+            return "Clip and camera motion saved"
         return measurement.get("reason") or f"Recording {manifest['status']}"

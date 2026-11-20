@@ -8,9 +8,10 @@ import cv2
 import numpy as np
 
 from fairway_fusion.cameras.ball_lock import (
-    ARM_SAMPLES, SCAN_SAMPLES, LockError, confirm_ball, scan_empty_area, track_locked_flight,
+    ARM_SAMPLES, SCAN_SAMPLES, BallValidationError, LockError, confirm_ball, scan_empty_area,
+    track_locked_flight,
 )
-from fairway_fusion.cameras.chip import calibrate_plane, measure_chip
+from fairway_fusion.cameras.chip import calibrate_plane, measure_chip, measure_image_motion
 from fairway_fusion.cameras.impact import ImpactRecorder, PICO_ARM_WINDOW_S
 from fairway_fusion.storage import SessionStateError
 
@@ -19,6 +20,7 @@ WINDOW = "Fairway Fusion ball lock"
 BUTTONS = {"scan": (12, 190), "arm": (204, 320), "cancel": (334, 450)}
 FOOTER_Y = 480
 SAMPLE_INTERVAL_NS = 66_000_000
+VALIDATION_TIMEOUT_NS = 4_000_000_000
 LOSS_GRACE_NS = 350_000_000
 
 
@@ -71,6 +73,7 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
     actions = {ord("e"): "scan", ord("a"): "arm", ord("d"): "cancel", ord("c"): "plane", ord("t"): "test"}
     work, job, samples = None, None, []
     next_sample = next_preview = started_ns = 0
+    validation_hint = None
     missing_since = None
     lock_lost = False
     clicked_ball = None
@@ -92,13 +95,21 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
 
     def measure(frames, event_ns):
         tracking = track_locked_flight(frames, locked, event_ns, args.min_radius, args.max_radius)
-        if not tracking[side]["flight_observations"]:
+        image_motion = []
+        for number, track in tracking.items():
+            motion = measure_image_motion(number, track["flight_sensor_timestamps_ns"], track["flight_centers_px"])
+            if motion is not None:
+                image_motion.append(motion)
+        if not any(track["flight_observations"] for track in tracking.values()):
             result = {"metrics": None, "reason": "No ball departure confirmed near the microphone event. Check the view and microphone, then re-arm."}
         elif corners is None:
-            result = {"metrics": None, "reason": "Flight saved. Set the side plane to estimate speed and launch angle."}
+            side_label = "Camera A" if side == numbers[0] else "Camera B"
+            result = {"metrics": None, "reason": f"Set a measured side plane in {side_label} before the next shot to calculate ball speed and launch angle."}
+        elif not tracking[side]["flight_observations"]:
+            result = {"metrics": None, "reason": "The ball moved in the other view. Keep the early flight visible in the calibrated camera and try again."}
         else:
             result = measure_chip(frames, side, event_ns, corners, *dimensions)
-        return {**result, "locked_flight_tracks": tracking}
+        return {**result, "locked_flight_tracks": tracking, "image_motion": image_motion}
 
     with ExitStack() as stack:
         if operator is None:
@@ -135,6 +146,14 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                         hints[number] = point
                         message = "Test click set. Press Arm to validate, or R to clear test clicks."
 
+            if work and now - started_ns >= VALIDATION_TIMEOUT_NS:
+                if job is not None:
+                    job.cancel()
+                mode, message = "NOT READY", (
+                    f"{validation_hint} Press Arm to try again." if work == "arm" and validation_hint else
+                    "Validation timed out. Check both camera feeds and try again."
+                )
+                work, job = None, None
             if work and job is None and now >= next_sample:
                 samples.append(frames)
                 next_sample = now + SAMPLE_INTERVAL_NS
@@ -145,6 +164,7 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                                           args.acquire_min_radius or args.min_radius, args.max_radius,
                                           hints.copy(), stereo)
             if job is not None and job.done():
+                retry = False
                 try:
                     result = job.result()
                     if work == "scan":
@@ -156,7 +176,12 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                         locked, missing_since, lock_lost = result, None, False
                         mode, message = "ARMING PICO", "Hold the ball still while the microphone arms."
                     else:
-                        raise LockError("Ball moved or disappeared during validation. Set it down again and re-arm.")
+                        raise BallValidationError("Ball moved or disappeared during validation. Let it settle in view.")
+                except BallValidationError as error:
+                    validation_hint = str(error)
+                    mode, message = "VALIDATING BALL", f"{validation_hint} Checking again."
+                    samples, next_sample = [], now
+                    retry = True
                 except (LockError, cv2.error) as error:
                     mode = "SCAN FAILED" if work == "scan" else "NOT READY"
                     message = str(error) if isinstance(error, LockError) else "Image check failed. Check the cameras and retry."
@@ -166,12 +191,9 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                     print(f"{message} {error}", flush=True)
                 except SessionStateError:
                     mode, message = "NOT READY", "The practice session ended. Start a session and arm again."
-                work, job = None, None
-            elif work and now - started_ns > 4_000_000_000:
-                if job is not None:
-                    job.cancel()
-                work, job = None, None
-                mode, message = "NOT READY", "Validation timed out. Check both camera feeds and try again."
+                job = None
+                if not retry:
+                    work = None
 
             visible = {}
             if recorder.active:
@@ -265,6 +287,7 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                     mode, message = "SCANNING", "Keep the mat empty and the unit still."
                 elif command == "arm" and references is not None:
                     arm_session_id = payload
+                    validation_hint = None
                     work, samples, started_ns, next_sample = "arm", [], now, now
                     mode, message = "VALIDATING BALL", "Hold the ball still while both views are checked."
                 elif command == "arm":

@@ -26,6 +26,10 @@ class LockError(ValueError):
     """A failed check with an actionable message for the operator."""
 
 
+class BallValidationError(LockError):
+    """The cameras are usable, but the scene has yet to show one stable ball."""
+
+
 def crop(image, box):
     x, y, width, height = box
     return image[y:y + height, x:x + width]
@@ -105,16 +109,23 @@ def _foreground(image, empty, box, label):
     return zone, delta
 
 
-def _stationary_match(zone, delta, ball, hint):
+def _stationary_match(zone, delta, texture, ball, hint):
     center, radius = ball["center"], ball["radius"]
     if hint is not None and math.dist(hint, center) > .5 * radius:
         return False
     change = _disk(delta, center, radius)
     rim = _rim_contrast(zone, center, radius)
+    # A clean ball has a mostly smooth interior even when one side is shaded.
+    # Shoe seams and laces can form plausible circular edges, but create many
+    # small intensity changes inside. Allow a printed logo or a few marks.
+    smooth_core = np.mean(_disk(texture, center, radius) <= 4)
     # A white ball in front of a shoe can darken part of the reference.
     # Require a changed interior and a mostly brighter, visible rim.
+    visible_rim = np.abs(rim) >= 12
+    covered_sectors = sum(sector.mean() >= .33 for sector in np.roll(visible_rim, 3).reshape(8, 6))
     return (np.mean(np.abs(change) >= 15) >= .65 and np.mean(change >= 15) >= .35
-            and np.mean(np.abs(rim) >= 12) >= .65 and np.mean(rim >= 10) >= .50)
+            and visible_rim.mean() >= .65 and np.mean(rim >= 10) >= .50
+            and covered_sectors >= 7 and smooth_core >= .80)
 
 
 def _same_ball(first, second):
@@ -127,10 +138,11 @@ def _stationary_observations(frames, empty, box, min_radius, max_radius, hint, l
     x, y, _, _ = box
     local_hint = None if hint is None else (hint[0] - x, hint[1] - y)
     patches = [_foreground(frame.image, empty, box, label) for frame in frames]
+    textures = [cv2.absdiff(zone, cv2.GaussianBlur(zone, (7, 7), 0)) for zone, _ in patches]
     observations = [
         [ball for ball in detect_ball_candidates(zone, min_radius, max_radius, prefer_roundness=False)
-         if _stationary_match(zone, delta, ball, local_hint)]
-        for zone, delta in patches
+         if _stationary_match(zone, delta, texture, ball, local_hint)]
+        for (zone, delta), texture in zip(patches, textures)
     ]
     seeds = [balls[0] for balls in observations if len(balls) == 1]
     if len(seeds) >= 2 and all(_same_ball(seeds[0], ball) for ball in seeds[1:]):
@@ -139,8 +151,8 @@ def _stationary_observations(frames, empty, box, min_radius, max_radius, hint, l
         seed = {**seeds[0], "center": tuple(int(v) for v in np.rint(
                     np.median([ball["center"] for ball in seeds], axis=0))),
                 "radius": round(float(np.median([ball["radius"] for ball in seeds])))}
-        for index, ((zone, delta), balls) in enumerate(zip(patches, observations)):
-            if not balls and _stationary_match(zone, delta, seed, local_hint):
+        for index, ((zone, delta), texture, balls) in enumerate(zip(patches, textures, observations)):
+            if not balls and _stationary_match(zone, delta, texture, seed, local_hint):
                 observations[index] = [seed]
     return [[{**ball, "center": (ball["center"][0] + x, ball["center"][1] + y)} for ball in balls]
             for balls in observations]
@@ -252,7 +264,7 @@ def confirm_ball(pairs, cameras, regions, references, min_radius, max_radius, hi
     for frames, candidates in zip(pairs, zip(*views)):
         if not all(candidates):
             if any(len(view) > 1 for view in candidates):
-                raise LockError("Multiple possible balls. Clear the hitting area and re-arm.")
+                raise BallValidationError("Multiple possible balls. Leave one ball visible in both boxes.")
             missing = "both cameras" if not any(candidates) else _camera_label(0 if not candidates[0] else 1)
             continue
         if stereo:
@@ -263,22 +275,22 @@ def confirm_ball(pairs, cameras, regions, references, min_radius, max_radius, hi
                     if point is not None:
                         matches.append((a, b, point))
             if not matches:
-                raise LockError("Views disagree or the ball is outside the physical hitting zone. Reposition and re-arm.")
+                raise BallValidationError("Views disagree or the ball is outside the physical hitting zone. Reposition the ball.")
         else:
             matches = [(a, b, None) for a in candidates[0] for b in candidates[1]]
         if len(matches) != 1:
-            raise LockError("Multiple possible balls. Clear the hitting area and re-arm.")
+            raise BallValidationError("Multiple possible balls. Leave one ball visible in both boxes.")
         observations.append(matches[0])
         accepted_frames.append(frames)
 
     if len(observations) < len(pairs) - 1:
-        raise LockError(f"No new ball confirmed in {missing}. Place one visible ball in the zone and re-arm.")
+        raise BallValidationError(f"No new ball confirmed in {missing}. Place one visible ball in the zone.")
 
     first = observations[0]
     for match in observations[1:]:
         if any(not _same_ball(a, b) for a, b in zip(first[:2], match[:2])) or (
                    stereo and np.linalg.norm(match[2] - first[2]) > stereo.diameter_m * .35):
-            raise LockError("Ball position or size was unstable. Let the ball settle and re-arm.")
+            raise BallValidationError("Ball position or size was unstable. Let the ball settle.")
 
     balls = dict(zip(cameras, observations[-1][:2]))
     signatures, empty_signatures = {}, {}
@@ -311,7 +323,7 @@ def track_locked_flight(frames, lock, event_ns, min_radius, max_radius):
                 last_seen_on_tee = frame.host_ns
             elif (elapsed >= -220_000_000 and previous is not None
                   and (flight or (last_seen_on_tee is not None
-                                  and frame.host_ns - last_seen_on_tee <= 160_000_000))):
+                                  and frame.host_ns - last_seen_on_tee <= 95_000_000))):
                 candidate = _flight_candidate(frame, previous, flight, tee, last_seen_on_tee,
                                               min_radius, max_radius)
                 if candidate is None:
@@ -329,7 +341,16 @@ def track_locked_flight(frames, lock, event_ns, min_radius, max_radius):
                 frame.ball = candidate
         else:
             status = "no_departure_confirmed"
-        summaries[number] = {"status": status, "flight_observations": len(flight) if len(flight) >= 2 else 0}
+        summaries[number] = {
+            "status": status,
+            "flight_observations": len(flight) if len(flight) >= 2 else 0,
+            "flight_sensor_timestamps_ns": [
+                frame.metadata.get("SensorTimestamp") for frame, _ in flight
+            ] if len(flight) >= 2 else [],
+            "flight_centers_px": [
+                list(candidate["center"]) for _, candidate in flight
+            ] if len(flight) >= 2 else [],
+        }
     return summaries
 
 
@@ -363,8 +384,17 @@ def _flight_candidate(frame, previous, flight, tee, last_seen_on_tee, min_radius
     if lo >= hi or min(right - x, bottom - y) <= 2 * lo:
         return None
     zone = frame.image[y:bottom, x:right]
+    previous_zone = previous.image[y:bottom, x:right]
+    difference = cv2.absdiff(zone, previous_zone)
+    proposals = detect_ball_candidates(zone, lo, hi, prefer_roundness=False)
+    # Against a shoe, pants leg, or bright wall the ball can be darker than
+    # part of its backdrop. Motion supplies additional circle proposals.
+    for motion in detect_ball_candidates(difference, lo, hi, prefer_roundness=False):
+        if not any(math.dist(motion["center"], proposal["center"]) <= .65 * motion["radius"]
+                   for proposal in proposals):
+            proposals.append(motion)
     candidates = []
-    for proposal in detect_ball_candidates(zone, lo, hi, prefer_roundness=False):
+    for proposal in proposals:
         point = (proposal["center"][0] + x, proposal["center"][1] + y)
         r = proposal["radius"]
         if math.dist(point, center) > reach or math.dist(point, tee["center"]) < .5 * tee["radius"]:
@@ -375,7 +405,10 @@ def _flight_candidate(frame, previous, flight, tee, last_seen_on_tee, min_radius
                 continue
         # The ball should appear at a new position in the current frame. A
         # persistent reflection within the prediction gate cannot win on shape alone.
-        changed = _disk(frame.image, point, r) - _disk(previous.image, point, r)
-        if np.mean(changed > 12) >= .28:
+        core = _disk(frame.image, point, r)
+        changed = core - _disk(previous.image, point, r)
+        rim = _rim_contrast(frame.image, point, r)
+        if (np.mean(np.abs(changed) > 12) >= .35 and np.mean(np.abs(rim) >= 10) >= .48
+                and np.std(core) <= 35):
             candidates.append({**proposal, "center": point})
     return candidates[0] if len(candidates) == 1 else None

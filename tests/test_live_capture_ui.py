@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from fairway_fusion.cameras.recording_store import read_manifest
+from fairway_fusion.services.recording_review import recording_measurement, review_frames
 from fairway_fusion.web.app import create_app
 
 
@@ -202,3 +203,36 @@ def test_disabled_live_page_and_empty_recordings_do_not_touch_hardware(tmp_path)
     assert client.get("/live/preview.jpg").status_code == 404
     assert "No recordings in this view" in client.get("/recordings").text
     assert client.get("/recordings/" + "1" * 32).status_code == 404
+
+
+def test_uncalibrated_shot_shows_measured_camera_motion(rig):
+    app, hardware, worker = rig
+    store = app.extensions["shot_store"]
+    client = app.test_client()
+    assert submit(client, "start").status_code == 303
+    assert submit(client, "scan").status_code == 303
+    until(worker, lambda state: state["calibrated"] and not state["busy"])
+    hardware.ball.set()
+    assert submit(client, "arm").status_code == 303
+    armed = until(worker, lambda state: state["mode"].startswith("ARM SUCCESSFUL"))
+    hardware.launch_at = hardware.index + 1
+    capture_id = armed["capture_id"]
+    until(worker, lambda state: state["last_capture"] == capture_id and not state["busy"])
+    _, manifest = read_manifest(store, store.get_capture(capture_id))
+    measurement = manifest["measurement"]
+    assert measurement["metrics"] is None
+    motion = measurement["image_motion"][0]
+    assert motion["speed_px_s"] == pytest.approx(2908, rel=.07)
+    assert motion["angle_deg"] == pytest.approx(21.8, abs=2)
+    assert motion["horizontal"] == "right"
+    page = client.get("/live").text
+    assert "Ball speed and launch angle unavailable" in page
+    assert "Image speed" in page and "px/s" in page
+    assert "Set the measurement scale for your next shot" in page
+    recording = client.get(f"/recordings/{capture_id}?frames=used&camera=A")
+    assert "Used in calculation" in recording.text and "/detection" in recording.text
+
+    del measurement["image_motion"]
+    legacy = recording_measurement(manifest)
+    assert legacy["image_motion"][0] == motion
+    assert sum(frame["used"] for frame in review_frames(manifest) if frame["camera"] == 0) == motion["sample_count"]

@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
-from fairway_fusion.cameras.chip import TeeDeparture, calibrate_plane, measure_chip, recover_short_chip
+from fairway_fusion.cameras.chip import TeeDeparture, calibrate_plane, measure_chip, measure_image_motion, recover_short_chip
 from fairway_fusion.cameras.impact import ImpactRecorder
 from fairway_fusion.hardware.pico_client import PicoRejected
 
@@ -135,6 +135,22 @@ def test_persistently_busy_gate_preserves_rejection_and_disarms(tmp_path, monkey
 def test_crossed_calibration_is_rejected():
     with pytest.raises(ValueError, match="four distinct corners"):
         calibrate_plane([(40, 40), (340, 190), (340, 40), (40, 190)], .60, .30)
+
+
+def test_image_motion_rejects_early_flight_that_jumps_to_the_club():
+    # Observations from the lab recording 273fe966. After the first true
+    # detection, the tracker marked the shaft and background near the club.
+    stamps = [2269366133000, 2269399437000, 2269466045000, 2269482699000]
+    centers = [(237, 254), (390, 214), (552, 223), (611, 231)]
+    assert measure_image_motion(0, stamps, centers) is None
+
+
+def test_two_point_motion_reports_only_average_image_displacement():
+    motion = measure_image_motion(1, [2546864565000, 2546881215000], [(266, 150), (340, 102)])
+    assert motion["sample_count"] == 2
+    assert motion["fit_max_error_px"] is None
+    assert motion["speed_px_s"] == pytest.approx(5297, abs=2)
+    assert motion["angle_deg"] == pytest.approx(33, abs=.1)
 
 
 @pytest.mark.parametrize("rising", [False, True])

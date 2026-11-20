@@ -20,7 +20,7 @@
   {% if live.preview %}
   <img class="live-preview" src="{{ url_for('live_preview') }}" width="1280" height="480"
        alt="Camera A and Camera B with the hitting areas outlined">
-  <p class="muted small">{{ 'Stereo profile loaded' if live.stereo else 'Two-view ball check' }} · {{ 'Side plane set' if live.measuring else 'Side plane needed for a chip estimate' }}</p>
+  <p class="muted small">{{ 'Stereo profile loaded' if live.stereo else 'Two-view ball check' }} · {{ 'Shot measurement scale set' if live.measuring else 'Set the measurement scale to see ball speed and launch angle' }}</p>
   {% endif %}
   {% if live.capture_id %}<p class="muted small capture-id">Capture {{ live.capture_id }}</p>{% endif %}
   <div class="row">
@@ -39,9 +39,9 @@
   </div>
   {% if live.preview %}
   <details class="side-plane">
-    <summary>Set the side plane for chip estimates</summary>
-    <p class="muted">In Camera A, mark the four corners of a measured rectangle in the vertical flight plane. Enter the pixels in the order shown, then clear the mat and scan it. Camera A is the left half of the <a href="{{ url_for('live_preview') }}" target="_blank" rel="noopener">original preview</a>.</p>
-    <form method="post" action="{{ url_for('page_action', action='live-plane') }}">{{ fields() }}
+    <summary>Set up ball speed and launch angle</summary>
+    <p class="muted">Place a measured rectangle upright in the plane the ball will travel through. Enter its actual width and height and the four corner coordinates from Camera A, the left half of the <a href="{{ url_for('live_preview') }}" target="_blank" rel="noopener">original preview</a>. Save the side plane, remove the target, then scan the empty hitting area. Repeat this setup if the cameras move or the server restarts.</p>
+    <form id="shot-measurement-setup" method="post" action="{{ url_for('page_action', action='live-plane') }}">{{ fields() }}
       <div class="plane-fields">
         {% for corner in ('Top left','Top right','Bottom right','Bottom left') %}
         <fieldset><legend>{{ corner }}</legend>
@@ -66,6 +66,9 @@
     <a class="btn" href="{{ url_for('recordings_page', capture_id=review.capture.capture_id) }}">Inspect frames</a>
   </div>
   {% include 'recording_metrics.html' %}
+  {% if live.preview and not live.measuring and not review.measurement.get('metrics') %}
+  <p><a href="#shot-measurement-setup">Set the measurement scale for your next shot</a></p>
+  {% endif %}
   {% include 'recording_player.html' %}
   {% if not review.manifest %}<p class="muted">No playable footage was saved for this attempt.</p>{% endif %}
 </article>
