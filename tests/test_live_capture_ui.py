@@ -188,14 +188,14 @@ def test_browser_runs_the_real_workflow_with_camera_and_pico_fakes(rig, tmp_path
 
     hardware.launch_at = None
     from fairway_fusion.cameras import locked_bench
-    original_confirm = locked_bench.confirm_ball
+    original_confirm = locked_bench.confirm_next_ball
 
     def slow_confirm(*args):
         time.sleep(.6)
         return original_confirm(*args)
 
     monkeypatch.setattr(locked_bench, "VALIDATION_TIMEOUT_NS", 500_000_000)
-    monkeypatch.setattr(locked_bench, "confirm_ball", slow_confirm)
+    monkeypatch.setattr(locked_bench, "confirm_next_ball", slow_confirm)
     assert submit(client, "arm").status_code == 303
     second = until(worker, lambda state: state["mode"].startswith("ARM SUCCESSFUL"))
     assert submit(client, "cancel").status_code == 303

@@ -341,6 +341,26 @@ def confirm_ball(pairs, cameras, regions, references, min_radius, max_radius, hi
     return ConfirmedBall(balls, signatures, empty_signatures, position)
 
 
+def confirm_next_ball(pairs, cameras, regions, references, min_radius, max_radius, hints, stereo, previous):
+    """Search the previous tee area first, using the original empty scan throughout."""
+    if previous and not hints:
+        local_regions, local_references = {}, {}
+        for camera in cameras:
+            x, y, w, h = regions[camera]
+            cx, cy = previous[camera]["center"]
+            reach = 5 * previous[camera]["radius"]
+            left, top = max(x, cx - reach), max(y, cy - reach)
+            right, bottom = min(x + w, cx + reach + 1), min(y + h, cy + reach + 1)
+            local_regions[camera] = (left, top, right - left, bottom - top)
+            local_references[camera] = references[camera][top-y:bottom-y, left-x:right-x]
+        try:
+            return confirm_ball(pairs, cameras, local_regions, local_references, min_radius, max_radius, hints, stereo)
+        except LockError:
+            # A player can tee up somewhere else within the original setup.
+            pass
+    return confirm_ball(pairs, cameras, regions, references, min_radius, max_radius, hints, stereo)
+
+
 def track_locked_flight(frames, lock, event_ns, min_radius, max_radius):
     """Follow the confirmed tee identity on saved frames, with no global fallback."""
     summaries = {}

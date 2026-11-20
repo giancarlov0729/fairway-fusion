@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 from fairway_fusion.cameras.ball_lock import (
-    ARM_SAMPLES, SCAN_SAMPLES, BallValidationError, LockError, confirm_ball, scan_empty_area,
+    ARM_SAMPLES, SCAN_SAMPLES, BallValidationError, LockError, confirm_next_ball, scan_empty_area,
     track_locked_flight,
 )
 from fairway_fusion.cameras.chip import (
@@ -75,7 +75,7 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
     numbers = tuple(args.cameras)
     dimensions = args.chip_plane_m
     side = args.cameras[0] if args.chip_camera is None else args.chip_camera
-    locked, corners = None, None
+    locked, corners, previous_tee = None, None, None
     scanned_before = references is not None
     hints, commands = {}, []
     scan_label = "Calibrate" if operator is not None else "Calibrated"
@@ -192,9 +192,9 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                 if work == "scan" and len(samples) == SCAN_SAMPLES:
                     job = executor.submit(scan_empty_area, tuple(samples), numbers, regions)
                 elif work == "arm" and len(samples) == ARM_SAMPLES:
-                    job = executor.submit(confirm_ball, tuple(samples), numbers, regions, references,
+                    job = executor.submit(confirm_next_ball, tuple(samples), numbers, regions, references,
                                           args.acquire_min_radius or args.min_radius, args.max_radius,
-                                          hints.copy(), stereo)
+                                          hints.copy(), stereo, previous_tee)
             if job is not None and job.done():
                 retry = False
                 try:
@@ -203,11 +203,13 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                         if save_reference is not None:
                             save_reference(result)
                         references = result
+                        previous_tee = None
                         mode, message = "READY", "Empty area saved. Place one ball inside the boxes, then press Arm."
                     elif all(result.present(frame) for frame in frames):
                         session = {"session_id": arm_session_id} if arm_session_id is not None else {}
                         recorder.arm(ball_lock=result.evidence(), **session)
                         locked, missing_since, lock_lost = result, None, False
+                        previous_tee = result.balls
                         mode, message = "ARMING PICO", "Hold the ball still while the microphone arms."
                     else:
                         raise BallValidationError("Ball moved or disappeared during validation. Let it settle in view.")
