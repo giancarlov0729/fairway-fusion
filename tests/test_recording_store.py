@@ -206,6 +206,28 @@ def test_recording_manifest_must_match_its_capture_and_stay_in_its_folder(store)
     assert client.get(f"/api/recordings/{folder.name}").get_json()["manifest"] is None
 
 
+def test_recording_frame_jump_keeps_selected_camera_and_filter(store):
+    adapter = RecordingStore(store)
+    folder = adapter.reserve(store.images_root / "clips", status="armed")
+    buffer = FrameBuffer(max_frames=204)
+    image = np.zeros((8, 12), np.uint8)
+    for index in range(102):
+        timestamp = 1_000_000 + index * 16_666_667
+        for camera in CAMERAS:
+            buffer.append(Frame(camera, timestamp, image, {"SensorTimestamp": timestamp}, None))
+    adapter.save_clip(buffer, folder, trigger_ns=1_000_000, settings=SETTINGS)
+    client = create_app({"TESTING": True, "DATABASE_PATH": store.path}).test_client()
+
+    page = client.get(f"/recordings/{folder.name}?frames=all&camera=B&frame=100")
+
+    assert page.status_code == 200
+    assert "Frame 100 of 102 · Camera B" in page.text
+    assert 'camera0_00199.png' in page.text
+    assert 'name="frames" value="all"' in page.text
+    assert 'name="camera" value="B"' in page.text
+    assert 'name="frame" type="number" min="1" max="102"' in page.text
+
+
 def test_connector_unknown_when_only_the_enum_number_is_known():
     assert camera_devices([{"Num": 0, "Id": "/usb/usb-camera"}])["0"]["connector"] is None
 

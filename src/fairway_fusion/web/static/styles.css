@@ -56,6 +56,17 @@
 .live-panel .row,.frame-controls {
   gap:10px
 }
+.frame-jump.row {
+  margin:0
+}
+.frame-jump input[type=number] {
+  width:7ch;
+  padding:5px 7px;
+  border:1px solid var(--line);
+  border-radius:7px;
+  background:#fffef8;
+  color:var(--ink)
+}
 .recording-filter {
   margin:12px 0
 }
