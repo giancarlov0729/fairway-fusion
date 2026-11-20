@@ -46,16 +46,15 @@ disconnected from the cameras and IR board. This workflow records free-running
 camera footage. The Pico's timing outputs still run during the attempt.
 
 ```bash
-source .venv-bench/bin/activate
-ls /dev/serial/by-id/
-export FAIRWAY_PICO_PORT=/dev/serial/by-id/REPLACE_WITH_YOUR_PICO
-export FAIRWAY_LIVE_CAPTURE=1
-python -m flask --app fairway_fusion.web.app:create_app run --host 127.0.0.1 --port 5000 --no-reload
+sh start-live.sh
 ```
 
-Install Flask in that environment if it is missing. Open **Live Capture** at
-`/live` on the Pi or through the SSH tunnel. Set `FAIRWAY_DB` to share a
-specific database with the desktop bench. Set `FAIRWAY_STEREO_PROFILE` to a
+The launcher uses `.venv-bench` and finds one Pico by its USB serial path. Set
+`FAIRWAY_PICO_PORT` explicitly if you need to select a port. Use
+`FAIRWAY_BENCH_PYTHON` to select a different Python environment. Install Flask
+in that environment if it is missing. Open **Live Capture** at `/live` on the
+Pi or through the SSH tunnel. Set `FAIRWAY_DB` to share a specific database
+with the desktop bench. Set `FAIRWAY_STEREO_PROFILE` to a
 measured 640×480 hitting-zone profile to enable physical position verification.
 The default checks ball appearance in both views.
 
