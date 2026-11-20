@@ -1,12 +1,41 @@
 """Free-running camera evidence for bring-up; no stereo or shot measurements."""
 
 from collections import deque
+from contextlib import ExitStack
 from dataclasses import dataclass
 import json
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+
+def read_requests(jobs):
+    """Copy both luma planes and release every request, including on errors."""
+    with ExitStack() as stack:
+        requests = []
+        for job in jobs:
+            request = job.get_result(timeout=2)
+            stack.callback(request.release)
+            requests.append(request)
+        return [(request.make_array("main")[:480, :640].copy(), request.get_metadata())
+                for request in requests]
+
+
+def open_bench_cameras(stack, camera_type, numbers, *, fps, exposure_us, gain):
+    """Open and configure the same free-running stream for desktop and browser."""
+    cameras = []
+    for number in numbers:
+        camera = camera_type(number)
+        stack.callback(camera.close)
+        config = camera.create_video_configuration(
+            main={"size": (640, 480), "format": "YUV420"}, buffer_count=4,
+            controls={"AeEnable": False, "ExposureTime": exposure_us,
+                      "AnalogueGain": gain, "FrameRate": fps}, queue=False,
+        )
+        camera.configure(config)
+        cameras.append(camera)
+    return cameras
 
 
 @dataclass

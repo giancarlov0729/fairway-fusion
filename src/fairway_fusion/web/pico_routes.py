@@ -1,6 +1,7 @@
 import atexit 
 import os  
-from flask import jsonify  
+from flask import jsonify, request
+from werkzeug.exceptions import Conflict
 from fairway_fusion.hardware.pico_client import PicoClient, PicoError  
 
 
@@ -14,6 +15,14 @@ def register_pico_routes(app):
 
     app.extensions["pico"] = pico       # Make client available to future capture orchestration
     atexit.register(pico.close)         # Release USB on notmal process exit
+
+    @app.before_request
+    def keep_one_controller_owner():
+        if app.config.get("LIVE_CAPTURE_UI") and request.endpoint in {
+            "connect_pico", "pico_status", "disarm_pico", "disconnect_pico",
+            "arm_capture", "capture_status", "cancel_capture", "recover_capture",
+        }:
+            raise Conflict("Use Live Capture to operate the Pico in camera bench mode.")
 
     @app.errorhandler(PicoError)        # Convert expected USB failtures to JSON
     def handle_pico_error(error):  
@@ -37,4 +46,4 @@ def register_pico_routes(app):
     @app.post("/api/pico/disconnect")   # Release serial device     
     def disconnect_pico():  
         pico.close()  
-        return jsonify(connected=False, capture_ready=False)  
+        return jsonify(connected=False, capture_ready=False)

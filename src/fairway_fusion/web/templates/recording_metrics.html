@@ -1,0 +1,11 @@
+{% set estimate = review.measurement.get('metrics') %}
+{% if estimate %}
+<p class="muted">Provisional chip estimate · Calibrated side view</p>
+<div class="recording-metrics">
+  <div><span class="cap">Ball speed</span><div class="fig">{{ num(estimate.speed_m_s, 2) }} <small>m/s</small></div></div>
+  <div><span class="cap">Launch angle</span><div class="fig">{{ num(estimate.launch_angle_deg) }}<small>°</small></div></div>
+</div>
+{% elif review.measurement.get('reason') %}
+<p class="muted">{{ review.measurement.reason }}</p>
+{% endif %}
+{% if review.capture.error %}<p class="notice">{{ review.capture.error }}</p>{% endif %}

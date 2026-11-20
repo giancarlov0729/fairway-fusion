@@ -99,14 +99,15 @@ class RecordingStore:
             self.update(capture_id, status="interrupted",
                         error=capture["error"] or "Camera bench stopped before the recording finished.")
 
-    def begin(self, capture_id, folder, *, status="preparing"):
+    def begin(self, capture_id, folder, *, status="preparing", session_id=None):
         relative = Path(folder).resolve().relative_to(self.store.images_root.resolve())
+        session = {"session_id": session_id} if session_id is not None else {}
         try:
             return self.store.create_capture({
                 "capture_id": capture_id, "status": status, "source": "live",
                 "purpose": "camera_test", "pinned": True, "timing": None,
-                "recording_manifest_path": (relative / "manifest.json").as_posix(),
-            }, attach_active_session=True)
+                "recording_manifest_path": (relative / "manifest.json").as_posix(), **session,
+            }, attach_active_session=session_id is None)
         except sqlite3.Error as error:
             raise OSError(f"Could not start the SQLite recording: {error}") from error
 

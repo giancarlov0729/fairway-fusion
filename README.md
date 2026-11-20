@@ -261,8 +261,8 @@ To be determined.
 
 ### JavaScript-free interface
 
-The browser uses HTML links and POST forms. Python/Flask renders Session, Results,
-and History; native HTML details expands input samples. No JavaScript runtime,
+The browser uses HTML links and POST forms. Flask renders Live Capture, Recordings,
+Session, Results, and History. No JavaScript runtime,
 framework, CDN, or npm build is required. A Content Security Policy blocks scripts.
 Run the server with `--no-reload` when the Pico is connected.
 
@@ -270,9 +270,9 @@ Form submissions redirect to GET pages, so refreshing a result does not save ano
 shot. Single-use form tokens reject repeated submissions. Tokens live in one server
 process; use a single process. After a restart or expired form, refresh Session before
 submitting again. Results and history are restored from SQLite. During a connection
-failure, revisit Results/History before retrying a write. There is no automatic
-reconnect, live timer, or background refresh; pages update on navigation or refresh.
-See docs/ui.md for the interface and testing details.
+failure, revisit Results or Recordings before retrying a write. Live Capture
+refreshes its HTML while an attempt is in progress. See
+[the UI guide](docs/ui.md#live-capture-on-the-pi) for Pi setup and testing.
 
 ### Repeatable vision verification
 

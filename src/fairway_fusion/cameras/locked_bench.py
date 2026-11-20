@@ -10,8 +10,9 @@ import numpy as np
 from fairway_fusion.cameras.ball_lock import (
     ARM_SAMPLES, SCAN_SAMPLES, LockError, confirm_ball, scan_empty_area, track_locked_flight,
 )
-from fairway_fusion.cameras.chip import measure_chip
+from fairway_fusion.cameras.chip import calibrate_plane, measure_chip
 from fairway_fusion.cameras.impact import ImpactRecorder, PICO_ARM_WINDOW_S
+from fairway_fusion.storage import SessionStateError
 
 
 WINDOW = "Fairway Fusion ball lock"
@@ -21,7 +22,7 @@ SAMPLE_INTERVAL_NS = 66_000_000
 LOSS_GRACE_NS = 350_000_000
 
 
-def _show(frames, regions, images_status, message, scanned_before, *, balls, hints):
+def preview_image(frames, regions, *, balls, hints):
     panels = []
     for label, frame in zip(("A", "B"), frames):
         image = cv2.cvtColor(frame.image, cv2.COLOR_GRAY2BGR)
@@ -34,6 +35,10 @@ def _show(frames, regions, images_status, message, scanned_before, *, balls, hin
             ball = balls[frame.camera]
             cv2.circle(image, ball["center"], ball["radius"], (0, 255, 0), 2)
         panels.append(image)
+    return np.hstack(panels)
+
+
+def _show(frames, regions, images_status, message, scanned_before, *, balls, hints):
     footer = np.full((105, 1280, 3), 28, dtype=np.uint8)
     for (left, right), title in zip(BUTTONS.values(), ("Recalibrate" if scanned_before else "Calibrated", "Arm", "Cancel")):
         cv2.rectangle(footer, (left, 7), (right, 36), (65, 65, 65), -1)
@@ -49,28 +54,32 @@ def _show(frames, regions, images_status, message, scanned_before, *, balls, hin
         else:
             line = candidate
     cv2.putText(footer, line, (12, y), cv2.FONT_HERSHEY_SIMPLEX, .59, (235, 235, 235), 1)
-    cv2.imshow(WINDOW, np.vstack((np.hstack(panels), footer)))
+    cv2.imshow(WINDOW, np.vstack((preview_image(frames, regions, balls=balls, hints=hints), footer)))
 
 
 def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_plane, report, *,
-                     recording_store=None):
-    """Run after both camera streams are open. Poll USB and CV without blocking acquisition."""
+                     recording_store=None, operator=None, client_factory=None):
+    """Run the same capture workflow for desktop preview and the web operator."""
     numbers = tuple(args.cameras)
     dimensions = args.chip_plane_m
     side = args.cameras[0] if args.chip_camera is None else args.chip_camera
     references, locked, corners = None, None, None
     scanned_before = False
     hints, commands = {}, []
-    mode, message = "SETUP", "Align the unit, clear the hitting area, then click Calibrated."
+    scan_label = "Calibrate" if operator is not None else "Calibrated"
+    mode, message = "SETUP", f"Align the unit, clear the hitting area, then click {scan_label}."
     actions = {ord("e"): "scan", ord("a"): "arm", ord("d"): "cancel", ord("c"): "plane", ord("t"): "test"}
     work, job, samples = None, None, []
     next_sample = next_preview = started_ns = 0
     missing_since = None
     lock_lost = False
     clicked_ball = None
-    print("Ball-lock bench: E scan empty area / A arm / D cancel / Q quit. C sets optional shot scale.")
-    if stereo is None:
-        print("Two-view test mode uses appearance only. It does not validate physical position.")
+    arm_session_id = None
+    last_capture = None
+    if operator is None:
+        print("Ball-lock bench: E scan empty area / A arm / D cancel / Q quit. C sets optional shot scale.")
+        if stereo is None:
+            print("Two-view test mode uses appearance only. It does not validate physical position.")
 
     def on_click(event, x, y, *_):
         nonlocal clicked_ball
@@ -86,26 +95,31 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
         if not tracking[side]["flight_observations"]:
             result = {"metrics": None, "reason": "No ball departure confirmed near the microphone event. Check the view and microphone, then re-arm."}
         elif corners is None:
-            result = {"metrics": None, "reason": "Flight saved. Use C to calibrate the side plane for an angle estimate."}
+            result = {"metrics": None, "reason": "Flight saved. Set the side plane to estimate speed and launch angle."}
         else:
             result = measure_chip(frames, side, event_ns, corners, *dimensions)
         return {**result, "locked_flight_tracks": tracking}
 
     with ExitStack() as stack:
-        cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
-        cv2.setMouseCallback(WINDOW, on_click)
-        stack.callback(cv2.destroyAllWindows)
+        if operator is None:
+            cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
+            cv2.setMouseCallback(WINDOW, on_click)
+            stack.callback(cv2.destroyAllWindows)
         executor = stack.enter_context(ThreadPoolExecutor(max_workers=1))
+        client_options = {"client_factory": client_factory} if client_factory is not None else {}
         recorder = ImpactRecorder(buffer, args.output, settings, args.pico_port, measure=measure,
-                                  recording_store=recording_store)
+                                  recording_store=recording_store, **client_options)
         stack.callback(recorder.close)
-        while True:
+        while operator is None or not operator.stopped:
             try:
                 frames = read_pair()
             except (TimeoutError, RuntimeError, OSError) as error:
                 if recorder.active:
                     recorder.cancel()
-                print(f"Camera feed unavailable: {error}. Check both connections and restart.", flush=True)
+                message = f"Camera feed unavailable: {error}. Check both connections and restart."
+                if operator is not None:
+                    raise RuntimeError(message) from error
+                print(message, flush=True)
                 return
             now = time.monotonic_ns()
             for frame in frames:
@@ -137,7 +151,8 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                         references = result
                         mode, message = "READY", "Empty area saved. Place one ball inside the boxes, then press Arm."
                     elif all(result.present(frame) for frame in frames):
-                        recorder.arm(ball_lock=result.evidence())
+                        session = {"session_id": arm_session_id} if arm_session_id is not None else {}
+                        recorder.arm(ball_lock=result.evidence(), **session)
                         locked, missing_since, lock_lost = result, None, False
                         mode, message = "ARMING PICO", "Hold the ball still while the microphone arms."
                     else:
@@ -149,6 +164,8 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                 except OSError as error:
                     mode, message = "NOT READY", "Could not write the capture record. Check the recording folder and re-arm."
                     print(f"{message} {error}", flush=True)
+                except SessionStateError:
+                    mode, message = "NOT READY", "The practice session ended. Start a session and arm again."
                 work, job = None, None
             elif work and now - started_ns > 4_000_000_000:
                 if job is not None:
@@ -171,7 +188,8 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                 if saved:
                     result = report(*saved)
                     outcome = saved[1]["status"]
-                    mode = "READY FOR NEXT ATTEMPT"
+                    last_capture = saved[1].get("capture_id") or last_capture
+                    mode = outcome.upper().replace("_", " ")
                     reason = saved[1].get("failure_reason")
                     message = f"{reason or result}. Place ball and re-arm."
                     if outcome == "timed_out":
@@ -202,26 +220,39 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                         if mode == "WAITING FOR QUIET MICROPHONE":
                             message = "Keep the hitting area quiet while the microphone settles."
 
-            if now >= next_preview:
-                verification = "STEREO" if stereo else "2D TEST MODE"
-                _show(frames, regions, f"{mode}  |  {verification}", message, scanned_before,
-                      balls=visible, hints=hints)
-                next_preview = now + 33_333_333
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
-                return
-            if key in actions:
-                commands.append(actions[key])
-            if key == ord("r") and not work and not recorder.active:
-                hints.clear()
-                message = "Test clicks cleared."
-            for command in commands:
+            if operator is not None:
+                operator.publish(mode=mode, message=message, calibrated=references is not None,
+                                 busy=bool(work or recorder.active), measuring=corners is not None,
+                                 capture_id=recorder.capture_id if recorder.active else None,
+                                 last_capture=last_capture, stereo=stereo is not None)
+                if now >= next_preview:
+                    operator.save_preview(preview_image(frames, regions, balls=visible, hints=hints))
+                    next_preview = now + 500_000_000
+                submitted = operator.take_commands()
+            else:
+                if now >= next_preview:
+                    verification = "STEREO" if stereo else "2D TEST MODE"
+                    _show(frames, regions, f"{mode}  |  {verification}", message, scanned_before,
+                          balls=visible, hints=hints)
+                    next_preview = now + 33_333_333
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), 27) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
+                    return
+                if key in actions:
+                    commands.append(actions[key])
+                if key == ord("r") and not work and not recorder.active:
+                    hints.clear()
+                    message = "Test clicks cleared."
+                submitted = [(command, None) for command in commands]
+                commands.clear()
+            for command, payload in submitted:
                 if command == "cancel":
                     recorder.cancel()
                     if job is not None:
                         job.cancel()
                     work, job = None, None
-                    mode, message = "CANCELLING", "Press Arm again when the ball is in position."
+                    mode = "CANCELLING" if recorder.active else "CANCELLED"
+                    message = "Press Arm again when the ball is in position."
                 elif command == "test" and recorder.active:
                     recorder.test_trigger()
                 elif work or recorder.active:
@@ -233,12 +264,15 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                     work, samples, started_ns, next_sample = "scan", [], now, now
                     mode, message = "SCANNING", "Keep the mat empty and the unit still."
                 elif command == "arm" and references is not None:
+                    arm_session_id = payload
                     work, samples, started_ns, next_sample = "arm", [], now, now
                     mode, message = "VALIDATING BALL", "Hold the ball still while both views are checked."
                 elif command == "arm":
-                    mode, message = "NOT READY", "Clear the hitting area and click Calibrated before arming."
+                    mode, message = "NOT READY", f"Clear the hitting area and click {scan_label} before arming."
                 elif command == "plane":
-                    corners = select_plane(next(frame for frame in frames if frame.camera == side), *dimensions)
+                    if operator is None:
+                        corners = select_plane(next(frame for frame in frames if frame.camera == side), *dimensions)
+                    else:
+                        corners, dimensions = payload
                     message = "Side plane saved. Press Arm when the ball is in position." if corners else "Side plane setup cancelled."
                     buffer.frames.clear()
-            commands.clear()

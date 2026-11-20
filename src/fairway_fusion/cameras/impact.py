@@ -43,7 +43,7 @@ class ImpactRecorder:
         temporary.write_text(json.dumps(self._details, indent=2), encoding="utf-8")
         temporary.replace(path)
 
-    def arm(self, *, ball_lock=None):
+    def arm(self, *, ball_lock=None, session_id=None):
         if self.active:
             return False
         self.capture_id = uuid4().hex
@@ -58,7 +58,7 @@ class ImpactRecorder:
         try:
             self._persist()
             if self.recording_store:
-                self.recording_store.begin(self.capture_id, folder)
+                self.recording_store.begin(self.capture_id, folder, session_id=session_id)
         except Exception:
             self._folder = None
             raise

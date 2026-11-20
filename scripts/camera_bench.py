@@ -11,23 +11,11 @@ import time
 import cv2
 import numpy as np
 
-from fairway_fusion.cameras.bench import Frame, FrameBuffer
+from fairway_fusion.cameras.bench import Frame, FrameBuffer, open_bench_cameras, read_requests
 from fairway_fusion.cameras.chip import TeeDeparture, calibrate_plane, measure_chip, recover_short_chip
 from fairway_fusion.cameras.recording_store import RecordingStore, camera_devices
 from fairway_fusion.detection.ball_detector import detect_ball, detect_moving_ball, follow_ball
 from fairway_fusion.storage import ShotStore
-
-
-def read_requests(jobs):
-    """Release every acquired request, including when one image conversion fails."""
-    with ExitStack() as stack:
-        requests = []
-        for job in jobs:
-            request = job.get_result(timeout=2)
-            stack.callback(request.release)
-            requests.append(request)
-        return [(request.make_array("main")[:480, :640].copy(), request.get_metadata())
-                for request in requests]
 
 
 def detect_frame(image, roi, min_radius, max_radius, previous=None, *,
@@ -432,18 +420,8 @@ def main():
         if not headless and not args.ball_lock:
             preview_worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
             tracking_worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
-        cameras = []
-        for number in args.cameras:
-            camera = Picamera2(number)
-            stack.callback(camera.close)
-            config = camera.create_video_configuration(
-                main={"size": (640, 480), "format": "YUV420"}, buffer_count=4,
-                controls={"AeEnable": False, "ExposureTime": args.exposure_us,
-                          "AnalogueGain": args.gain, "FrameRate": args.fps},
-                queue=False,
-            )
-            camera.configure(config)
-            cameras.append(camera)
+        cameras = open_bench_cameras(stack, Picamera2, args.cameras, fps=args.fps,
+                                     exposure_us=args.exposure_us, gain=args.gain)
         # Stop capture before analysis even though the camera objects remain open.
         capture = stack.enter_context(ExitStack())
         for camera in cameras:

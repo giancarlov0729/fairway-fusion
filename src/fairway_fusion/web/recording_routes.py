@@ -1,12 +1,18 @@
 """Read-only access to camera recordings and their original frames."""
 
+from io import BytesIO
+from threading import Lock
+
+import cv2
 from flask import abort, jsonify, request, send_file, url_for
 
 from fairway_fusion.cameras.recording_store import read_manifest, recording_frame_path
+from fairway_fusion.services.recording_review import annotated_png, render_webm
 
 
 def register_recording_routes(app):
     store = app.extensions["shot_store"]
+    encoder_lock = Lock()
 
     def query_int(name, default, minimum):
         raw = request.args.get(name)
@@ -39,15 +45,41 @@ def register_recording_routes(app):
                 frame["url"] = url_for("get_recording_frame", capture_id=capture_id, filename=frame["file"])
         return jsonify(capture=row, manifest=manifest)
 
-    @app.get("/api/recordings/<capture_id>/frames/<filename>")
-    def get_recording_frame(capture_id, filename):
+    def saved_frame(capture_id, filename):
         path, manifest = read_manifest(store, recording(capture_id))
-        if manifest is None or not any(frame["file"] == filename for frame in manifest["frames"]):
+        frame = next((frame for frame in manifest["frames"] if frame["file"] == filename), None) if manifest else None
+        if frame is None:
             abort(404, description="Recording frame is unavailable.")
         frame_path = recording_frame_path(path, filename)
         if frame_path is None:
             abort(404, description="Recording frame is unavailable.")
+        return frame_path, frame
+
+    @app.get("/api/recordings/<capture_id>/frames/<filename>")
+    def get_recording_frame(capture_id, filename):
+        frame_path, _ = saved_frame(capture_id, filename)
         try:
             return send_file(frame_path, mimetype="image/png")
         except FileNotFoundError:
             abort(404, description="Recording frame is unavailable.")
+
+    @app.get("/api/recordings/<capture_id>/frames/<filename>/detection")
+    def get_recording_detection(capture_id, filename):
+        path, frame = saved_frame(capture_id, filename)
+        data = annotated_png(path, frame)
+        if data is None:
+            abort(404, description="Recording frame could not be decoded.")
+        return send_file(BytesIO(data), mimetype="image/png")
+
+    @app.get("/api/recordings/<capture_id>/preview.webm")
+    def get_recording_video(capture_id):
+        path, manifest = read_manifest(store, recording(capture_id))
+        if manifest:
+            try:
+                with encoder_lock:
+                    video = render_webm(path, manifest)
+                if video is not None:
+                    return send_file(video, mimetype="video/webm", conditional=True)
+            except (OSError, cv2.error):
+                app.logger.exception("Could not render recording preview %s", capture_id)
+        abort(404, description="Video preview is unavailable. Open the individual recording frames.")

@@ -1,0 +1,73 @@
+<div class="workflow-heading">
+  <div>
+    <h1>Live capture</h1>
+    <p class="muted">Scan the empty hitting area, place one ball, then arm for your shot.</p>
+  </div>
+  <a class="btn" href="{{ url_for('recordings_page', session_id=active.id if active else none) }}">Browse recordings</a>
+</div>
+{% if not live.enabled %}
+<p class="notice">Live capture is disabled on this server. Enable camera bench mode on the Pi to use the cameras and Pico.</p>
+{% endif %}
+<div class="live-grid{% if review %} with-result{% endif %}">
+<article class="panel live-panel">
+  <div class="workflow-heading">
+    <div role="status" aria-live="polite">
+      <span class="capture-state">{{ live.mode }}</span>
+      <p>{{ live.message }}</p>
+    </div>
+    <form method="post" action="{{ url_for('page_action', action='live-refresh') }}">{{ fields() }}<button class="btn">Refresh status</button></form>
+  </div>
+  {% if live.preview %}
+  <img class="live-preview" src="{{ url_for('live_preview') }}" width="1280" height="480"
+       alt="Camera A and Camera B with the hitting areas outlined">
+  <p class="muted small">{{ 'Stereo profile loaded' if live.stereo else 'Two-view ball check' }} · {{ 'Side plane set' if live.measuring else 'Side plane needed for a chip estimate' }}</p>
+  {% endif %}
+  {% if live.capture_id %}<p class="muted small capture-id">Capture {{ live.capture_id }}</p>{% endif %}
+  <div class="row">
+    {% if not active %}
+    <form method="post" action="{{ url_for('page_action', action='live-start') }}">{{ fields() }}<button class="btn primary">Start session</button></form>
+    {% endif %}
+    {% if not live.preview %}
+    <form method="post" action="{{ url_for('page_action', action='live-preview') }}">{{ fields() }}<button class="btn" {% if live.busy or not live.enabled %}disabled{% endif %}>Start cameras</button></form>
+    {% endif %}
+    <form method="post" action="{{ url_for('page_action', action='live-scan') }}">{{ fields() }}<button class="btn" {% if live.busy or not live.enabled %}disabled{% endif %}>{{ 'Recalibrate' if live.calibrated else 'Calibrate' }}</button></form>
+    <form method="post" action="{{ url_for('page_action', action='live-arm') }}">{{ fields() }}<button class="btn go" {% if not live.calibrated or live.busy or not active or not live.enabled %}disabled{% endif %}>Arm</button></form>
+    <form method="post" action="{{ url_for('page_action', action='live-cancel') }}">{{ fields() }}<button class="btn" {% if not live.busy or not live.enabled %}disabled{% endif %}>Cancel / disarm</button></form>
+    {% if active %}
+    <form method="post" action="{{ url_for('page_action', action='live-end') }}">{{ fields() }}<button class="btn" {% if live.busy %}disabled{% endif %}>End session</button></form>
+    {% endif %}
+  </div>
+  {% if live.preview %}
+  <details class="side-plane">
+    <summary>Set the side plane for chip estimates</summary>
+    <p class="muted">In Camera A, mark the four corners of a measured rectangle in the vertical flight plane. Enter the pixels in the order shown, then clear the mat and scan it. Camera A is the left half of the <a href="{{ url_for('live_preview') }}" target="_blank" rel="noopener">original preview</a>.</p>
+    <form method="post" action="{{ url_for('page_action', action='live-plane') }}">{{ fields() }}
+      <div class="plane-fields">
+        {% for corner in ('Top left','Top right','Bottom right','Bottom left') %}
+        <fieldset><legend>{{ corner }}</legend>
+          <label>X <input name="x{{ loop.index0 }}" required type="number" min="0" max="639" inputmode="numeric"></label>
+          <label>Y <input name="y{{ loop.index0 }}" required type="number" min="0" max="479" inputmode="numeric"></label>
+        </fieldset>
+        {% endfor %}
+      </div>
+      <div class="row plane-dimensions">
+        <label>Width (m) <input name="width_m" type="number" required min=".01" step="any" value=".60"></label>
+        <label>Height (m) <input name="height_m" type="number" required min=".01" step="any" value=".30"></label>
+        <button class="btn" {% if live.busy %}disabled{% endif %}>Save side plane</button>
+      </div>
+    </form>
+  </details>
+  {% endif %}
+</article>
+{% if review %}
+<article class="panel live-result">
+  <div class="workflow-heading">
+    <div><h2>Latest shot attempt</h2><span class="capture-state state-{{ review.capture.status }}">{{ review.capture.status|replace('_',' ')|title }}</span></div>
+    <a class="btn" href="{{ url_for('recordings_page', capture_id=review.capture.capture_id) }}">Inspect frames</a>
+  </div>
+  {% include 'recording_metrics.html' %}
+  {% include 'recording_player.html' %}
+  {% if not review.manifest %}<p class="muted">No playable footage was saved for this attempt.</p>{% endif %}
+</article>
+{% endif %}
+</div>

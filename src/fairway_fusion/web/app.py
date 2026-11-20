@@ -1,3 +1,6 @@
+import atexit
+import os
+
 from fairway_fusion.web.page_routes import register_page_routes
 
 # Flask creates server, jsonify builds JSON responses, request handles incoming requests, render_template serves HTML
@@ -22,6 +25,7 @@ from fairway_fusion.web.vision_routes import register_vision_routes
 from fairway_fusion.web.vision_media_routes import register_vision_media_routes
 from fairway_fusion.web.recording_routes import register_recording_routes
 from fairway_fusion.cameras.recording_store import RecordingStore
+from fairway_fusion.services.live_capture import LiveCapture
 
 # Create Flask application instance
 def create_app(test_config=None):
@@ -29,6 +33,7 @@ def create_app(test_config=None):
     app = Flask(__name__)                               # Look for future HTML in web/templates and CSS/JS in web/static
 
     app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024      # Limit request size to 1 MiB
+    app.config["LIVE_CAPTURE_UI"] = os.environ.get("FAIRWAY_LIVE_CAPTURE") == "1"
 
     if test_config is not None:                         # Tests can override config w/o changing normal settings
         app.config.update(test_config)
@@ -111,6 +116,16 @@ def create_app(test_config=None):
         # Only recover abandoned bench work when no bench owns this database.
         with RecordingStore(store).writer(skip_if_busy=True):
             pass
+    live = LiveCapture(
+        store, app.config.get("PICO_PORT", os.environ.get("FAIRWAY_PICO_PORT", "")),
+        enabled=app.config["LIVE_CAPTURE_UI"],
+        stereo_profile=app.config.get("LIVE_STEREO_PROFILE", os.environ.get("FAIRWAY_STEREO_PROFILE")),
+        regions=app.config.get("LIVE_CAPTURE_REGIONS"), camera_type=app.config.get("LIVE_CAMERA_TYPE"),
+        client_factory=app.config.get("LIVE_PICO_FACTORY"),
+    )
+    app.extensions["live_capture"] = live
+    if live.enabled:
+        atexit.register(live.close)
     app.extensions["capture_service"] = CaptureService(
         app.extensions["pico"], store.captures
     )
