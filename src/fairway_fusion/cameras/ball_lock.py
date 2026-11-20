@@ -120,11 +120,11 @@ def _stationary_match(zone, delta, texture, ball, hint):
     # Shoe seams and laces can form plausible circular edges, but create many
     # small intensity changes inside. Allow a printed logo or a few marks.
     smooth_core = np.mean(_disk(texture, center, radius) <= 4)
-    # A white ball in front of a shoe can darken part of the reference.
+    # A shaded ball can also darken the empty reference (bright floor behind the mat).
     # Require a changed interior and a mostly brighter, visible rim.
     visible_rim = np.abs(rim) >= 12
     covered_sectors = sum(sector.mean() >= .33 for sector in np.roll(visible_rim, 3).reshape(8, 6))
-    return (np.mean(np.abs(change) >= 15) >= .65 and np.mean(change >= 15) >= .35
+    return (np.mean(np.abs(change) >= 15) >= .65
             and visible_rim.mean() >= .65 and np.mean(rim >= 10) >= .50
             and covered_sectors >= 7 and smooth_core >= .80)
 
@@ -246,7 +246,7 @@ class ConfirmedBall:
         ball = self.balls[frame.camera]
         current = _disk(frame.image, ball["center"], ball["radius"])
         locked, empty = self.signatures[frame.camera], self.empty_signatures[frame.camera]
-        if np.mean(np.abs(current - locked) <= 28) < .70 or np.mean(current - empty >= 12) < .35:
+        if np.mean(np.abs(current - locked) <= 28) < .70 or np.mean(np.abs(current - empty) >= 12) < .50:
             return False
         # A bright region filling this patch is insufficient. Look for a rim
         # at the original radius; absolute contrast allows for bright backgrounds.

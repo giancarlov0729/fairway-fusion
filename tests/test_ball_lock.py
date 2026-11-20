@@ -64,6 +64,21 @@ def test_static_distractor_cannot_arm_and_one_view_is_insufficient(references):
         confirm(sequence(TEE, backdrop=112), references)
 
 
+def test_shaded_ball_can_darken_the_empty_floor():
+    regions = dict.fromkeys(CAMERAS, (0, 0, 640, 480))
+    empty = sequence((None, None), n=7, backdrop=185)
+    # A bright floor above a dark mat can be brighter than the ball interior.
+    placed = sequence((None, None), backdrop=185)
+    for pair in placed:
+        for frame, (x, y) in zip(pair, TEE):
+            cv2.rectangle(frame.image, (x - 34, y - 30), (x + 34, y + 22), 40, -1)
+            cv2.circle(frame.image, (x, y), 16, 130, -1, cv2.LINE_AA)
+    background = scan_empty_area(empty, CAMERAS, regions)
+    lock = confirm_ball(placed, CAMERAS, regions, background, 10, 56, {})
+    assert all(lock.present(frame) for frame in placed[-1])
+    assert not any(lock.present(frame) for frame in empty[-1])
+
+
 def test_ambiguous_or_unstable_candidates_require_rearming(references):
     with pytest.raises(LockError, match="Multiple possible balls"):
         confirm(sequence(TEE, extra=True), references)

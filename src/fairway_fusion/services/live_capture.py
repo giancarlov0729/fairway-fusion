@@ -130,7 +130,7 @@ class LiveCapture:
                             stream_format="YUV420", size=[640, 480], fps=60, exposure_us=1000, gain=8)
             args = SimpleNamespace(cameras=numbers, chip_camera=0, chip_plane_m=(.60, .30),
                                    output=self.output, pico_port=self.port, min_radius=6,
-                                   max_radius=56, acquire_min_radius=18)
+                                   max_radius=56, acquire_min_radius=10)
             with self.recordings.writer(), ExitStack() as stack:
                 cv2.setNumThreads(2)
                 cameras = open_bench_cameras(stack, camera_type, numbers, fps=settings["fps"],
