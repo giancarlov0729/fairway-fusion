@@ -106,7 +106,7 @@ saved SensorTimestamp differences show the acquired cadence and gaps.
    entire landing distance at the expense of ball size.
 4. Have a teammate press **space immediately after impact**. The buffer retains recent
    frames and adds one second afterward. It analyzes the frames and saves PNGs and
-   `manifest.json` under `data/recordings/bench/<UTC timestamp>/`. Keep the first attempt
+   `manifest.json` under `captures/bench/<capture-id>/` next to the SQLite file. Keep the first attempt
    slow: roll or toss the ball through the same region before trying a club.
 5. Press **a** to rearm for another attempt, **d** to cancel/disarm, or **q** to exit.
    Acquisition pauses while files save. Quit/disarm during recording discards that
@@ -205,7 +205,7 @@ cd ~/fairway-fusion-bench-ball-detection
    **D** cancels and **Q** quits. **T** tests the recording path while armed and
    produces an explicitly labeled test clip.
 5. Read the estimated speed and elevation in the preview or terminal. Each attempt
-   saves evidence under `data/recordings/bench/`. The manifest includes the Pico
+   saves evidence under `captures/bench/` next to the SQLite file. The manifest includes the Pico
    report, frame timestamps, calibration, and any accepted estimate or rejection.
 
 Speed is the magnitude of the fitted downrange and upward velocity, and elevation

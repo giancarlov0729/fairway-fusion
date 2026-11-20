@@ -172,7 +172,8 @@ def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
     monkeypatch.setitem(sys.modules, "picamera2", SimpleNamespace(Picamera2=Camera))
     clock = count(0, 16_000_000 if mode == "manual" else 100_000_000)
     monkeypatch.setattr("time.monotonic_ns", lambda: next(clock))
-    args = ["camera_bench", "--fps", "60", "--output", str(tmp_path)]
+    database_path = tmp_path / "fairway.db"
+    args = ["camera_bench", "--fps", "60", "--output", str(tmp_path), "--database", str(database_path)]
     if mode in ("manual", "preview"):
         keypresses = [ord("a"), -1, 32] + [-1] * 28 if mode == "manual" else [-1] * 6
         keys = iter(keypresses + [ord("q")])
@@ -224,6 +225,13 @@ def test_camera_recording_and_request_release(tmp_path, monkeypatch, mode):
     else:
         runpy.run_path(str(script), run_name="__main__")
         manifest = json.loads(next(tmp_path.rglob("manifest.json")).read_text())
+        from fairway_fusion.storage import ShotStore
+
+        saved = ShotStore(database_path).get_capture(manifest["capture_id"])
+        assert saved["purpose"] == "camera_test" and saved["status"] == "completed"
+        assert saved["timing"] is None
+        assert saved["detections"]["frame_count"] == len(manifest["frames"])
+        assert saved["camera_metadata"]["camera_a"]["pixel_format"] == "R8"
         assert {frame["camera"] for frame in manifest["frames"]} == {0, 1}
         image = cv2.imread(str(next(tmp_path.rglob("*.png"))), cv2.IMREAD_GRAYSCALE)
         assert image.shape == (480, 640)

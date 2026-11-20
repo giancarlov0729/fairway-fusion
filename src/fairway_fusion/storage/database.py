@@ -346,10 +346,47 @@ def _migration_4(conn):
     _run_script(conn, SHOT_LINKS_AND_CARRY_SCHEMA)
 
 
+CAPTURE_PURPOSE_AND_CAMERAS_SCHEMA = """
+-- Adds two columns to captures. Existing captures keep all their data and
+-- get purpose 'shot' and no camera metadata.
+
+-- What the capture is for. 'shot' attempts are processed into speed and
+-- angles. 'camera_test' captures only prove both cameras took images; they
+-- never produce a shot, so a test with good images and no metrics is a
+-- success, not a failed shot.
+ALTER TABLE captures ADD COLUMN purpose TEXT NOT NULL DEFAULT 'shot'
+    CHECK (purpose IN ('shot', 'camera_test'));
+
+-- What each camera actually reported for this capture (identity, image size,
+-- pixel format, exposure, gain, sensor timestamp), as JSON. Anything not
+-- recorded is stored as null, meaning unknown, never a guessed value.
+ALTER TABLE captures ADD COLUMN camera_metadata_json TEXT;
+"""
+
+
+def _migration_5(conn):
+    """Version 5: add capture purpose and per-camera metadata."""
+    _run_script(conn, CAPTURE_PURPOSE_AND_CAMERAS_SCHEMA)
+
+
+def _migration_6(conn):
+    """Index recording locations and import manifests saved by the older bench."""
+    _run_script(conn, """
+        ALTER TABLE captures ADD COLUMN recording_manifest_path TEXT;
+        UPDATE captures
+        SET recording_manifest_path = json_extract(detections_json, '$.recording_manifest'),
+            timing_json = NULL
+        WHERE purpose = 'camera_test'
+          AND CASE WHEN json_valid(detections_json)
+              THEN json_type(detections_json, '$.recording_manifest') = 'text' END;
+        CREATE INDEX idx_captures_recordings ON captures(created_at)
+            WHERE recording_manifest_path IS NOT NULL;
+    """)
+
+
 # Position in this list = version number it upgrades TO. MIGRATIONS[0] takes
 # a file to version 1, MIGRATIONS[1] to version 2, and so on.
-MIGRATIONS = [_migration_1, _migration_2, _migration_3, _migration_4]
-
+MIGRATIONS = [_migration_1, _migration_2, _migration_3, _migration_4, _migration_5, _migration_6]
 # The version this code expects. Always equal to the number of migrations.
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -651,6 +688,70 @@ def _flag(key, value):
     return int(value)
 
 
+# The details recorded for each camera. Every key is optional; a key that is
+# not supplied is stored as None, meaning "not recorded", never a guess.
+# Values are what the camera REPORTED for this capture (e.g. the exposure it
+# actually used), not what was requested.
+CAMERA_METADATA_KEYS = {
+    "model": "text",               # e.g. "imx296"
+    "camera_id": "text",           # Picamera2's identity string for the sensor
+    "connector": "text",           # which Pi port it is plugged into, e.g. "CAM0"
+    "width": "pixels",             # image size actually captured
+    "height": "pixels",
+    "pixel_format": "text",        # e.g. "YUV420", "R8"
+    "exposure_us": "measure",      # reported exposure time, microseconds
+    "analogue_gain": "measure",    # reported sensor gain
+    "sensor_timestamp_ns": "count",  # the camera's own frame timestamp
+}
+
+
+def _camera_metadata(key, value):
+    """Check per-camera metadata and store it as JSON with every key present.
+
+    Accepts {"camera_a": {...}, "camera_b": {...}}. Either camera may be left
+    out or None, e.g. when one camera failed to capture; it is then stored as
+    None. Missing keys inside a camera are filled with None.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} must be a dict with camera_a and/or camera_b, or None")
+    unknown = set(value) - {"camera_a", "camera_b"}
+    if unknown:
+        raise ValueError(f"Unknown cameras in {key}: {sorted(unknown)}")
+
+    cleaned = {}
+    for camera in ("camera_a", "camera_b"):
+        details = value.get(camera)
+        if details is None:
+            cleaned[camera] = None
+            continue
+        if not isinstance(details, dict):
+            raise ValueError(f"{key} {camera} must be a dict or None")
+        unknown = set(details) - set(CAMERA_METADATA_KEYS)
+        if unknown:
+            raise ValueError(f"Unknown {camera} metadata fields: {sorted(unknown)}")
+        cleaned[camera] = {}
+        for field, kind in CAMERA_METADATA_KEYS.items():
+            item = details.get(field)
+            name = f"{camera} {field}"
+            if item is None:
+                pass
+            elif kind == "text":
+                if not isinstance(item, str):
+                    raise ValueError(f"{name} must be text or None")
+            elif kind in ("pixels", "count"):
+                # bool is a kind of int in Python, so it is refused explicitly.
+                if type(item) is not int or item < (1 if kind == "pixels" else 0):
+                    raise ValueError(f"{name} must be a whole number"
+                                     + (" above 0" if kind == "pixels" else ", 0 or more"))
+            elif kind == "measure":
+                if type(item) not in (int, float) or not math.isfinite(item) or item < 0:
+                    raise ValueError(f"{name} must be a finite number, 0 or more")
+            cleaned[camera][field] = item
+    return json.dumps(cleaned)
+
+
 # record key -> (database column, check). JSON fields get a _json column.
 _CAPTURE_FIELDS = {
     "session_id": ("session_id", _int_or_none),
@@ -668,6 +769,9 @@ _CAPTURE_FIELDS = {
     "detections": ("detections_json", _json_or_none),
     "pinned": ("pinned", _flag),
     "images_deleted_at": ("images_deleted_at", _text_or_none),
+    "purpose": ("purpose", _choice(("shot", "camera_test"))),
+    "camera_metadata": ("camera_metadata_json", _camera_metadata),
+    "recording_manifest_path": ("recording_manifest_path", _relative_path),
 }
 
 
@@ -1113,6 +1217,17 @@ class ShotStore:
                     raise SessionStateError("Capture is not available for processing completion")
                 if finalize_capture and any(capture[key] != expected_capture[key] for key in input_keys):
                     raise SessionStateError("Capture inputs changed while processing; result was not saved")
+                # A shot always carries its capture's source. Without this, a
+                # real capture could produce a shot labelled "simulation" (or
+                # a simulated one a shot labelled "live"), and history would
+                # mix fake and real data without anyone noticing.
+                if capture["purpose"] == "camera_test":
+                    raise ValueError("Camera-test captures cannot produce shots")
+                if capture["source"] != source:
+                    raise ValueError(
+                        f"Shot source {source!r} does not match capture source "
+                        f"{capture['source']!r}"
+                    )
                 capture_session_id = capture["session_id"]
                 if capture_session_id is not None:
                     if session_id is not None and session_id != capture_session_id:
@@ -1333,6 +1448,10 @@ class ShotStore:
         with closing(self._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             capture = self._capture(conn, capture_id)
+            if capture["purpose"] == "camera_test":
+                # Refused before anything changes, so the camera test keeps
+                # its status and is never mistaken for a failed shot.
+                raise SessionStateError("Camera-test captures are not processed into shots")
             if capture["source"] != source:
                 raise SessionStateError("Capture source does not match the requested processing source")
             existing = conn.execute("SELECT * FROM shots WHERE capture_id = ?", (capture_id,)).fetchone()
@@ -1360,7 +1479,7 @@ class ShotStore:
         """
         return CaptureRecords(self)
 
-    def create_capture(self, record):
+    def create_capture(self, record, *, attach_active_session=False):
         """Save a new capture record and return it as stored.
 
         ``record`` is a dict that must contain capture_id and status, and
@@ -1383,8 +1502,10 @@ class ShotStore:
         now = _now()
         columns = {"capture_id": capture_id, "created_at": now, "updated_at": now,
                    **columns}
-        names = ", ".join(columns)
-        marks = ", ".join("?" for _ in columns)
+        if attach_active_session and "session_id" in columns:
+            raise ValueError("Choose either an explicit session or the active session.")
+        if columns.get("recording_manifest_path") is not None and columns.get("purpose") != "camera_test":
+            raise ValueError("Bench recordings require camera-test purpose.")
 
         with closing(self._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1392,6 +1513,9 @@ class ShotStore:
                 "SELECT 1 FROM captures WHERE capture_id = ?", (capture_id,)
             ).fetchone():
                 raise CaptureExistsError(f"Capture {capture_id} already exists")
+            if attach_active_session:
+                active = self._active(conn)
+                columns["session_id"] = active["id"] if active else None
             self._check_links(conn, columns)
             if columns.get("session_id") is not None:
                 if self._session(conn, columns["session_id"])["ended_at"] is not None:
@@ -1399,6 +1523,8 @@ class ShotStore:
             # Column names come only from _CAPTURE_FIELDS (fixed in this
             # file), never from the caller, so building them into the SQL
             # text is safe. Every value still goes through "?" placeholders.
+            names = ", ".join(columns)
+            marks = ", ".join("?" for _ in columns)
             conn.execute(
                 f"INSERT INTO captures ({names}) VALUES ({marks})",
                 list(columns.values()),
@@ -1434,6 +1560,16 @@ class ShotStore:
             # unchanged fields, so separate updates cannot bypass validation.
             conn.execute("BEGIN IMMEDIATE")
             current = self._capture(conn, capture_id)
+            for key in ("purpose", "recording_manifest_path"):
+                if key in columns and columns[key] != current[key]:
+                    raise ValueError(f"Capture {key} cannot change.")
+            if any(key in columns and columns[key] != current[key] for key in ("source", "session_id")):
+                shot = conn.execute(
+                    "SELECT source, session_id FROM shots WHERE capture_id = ?", (capture_id,),
+                ).fetchone()
+                if shot and any(key in columns and columns[key] != shot[key]
+                                for key in ("source", "session_id")):
+                    raise ValueError("Capture source and session must agree with its linked shot.")
             self._check_links(conn, {**current, **columns})
             conn.execute(
                 f"UPDATE captures SET {assignments} WHERE capture_id = ?",
@@ -1441,7 +1577,7 @@ class ShotStore:
             )
             return self._capture(conn, capture_id)
 
-    def mark_interrupted_captures(self):
+    def mark_interrupted_captures(self, *, include_recordings=True):
         """Mark every unfinished capture as interrupted. Returns how many.
 
         Call this ONCE when the server starts, before accepting requests. A
@@ -1453,34 +1589,49 @@ class ShotStore:
         interrupt a capture the running server is still working on.
         """
         placeholders = ", ".join("?" for _ in UNFINISHED_CAPTURE_STATUSES)
+        filter_recordings = "" if include_recordings else "AND recording_manifest_path IS NULL"
         with closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 f"""UPDATE captures
                     SET status = 'interrupted',
                         error = COALESCE(error, 'Server restarted before the capture finished'),
                         updated_at = ?
-                    WHERE status IN ({placeholders})""",
+                    WHERE status IN ({placeholders}) {filter_recordings}""",
                 (_now(), *UNFINISHED_CAPTURE_STATUSES),
             )
             # COALESCE keeps an existing error message if there was one.
             return cursor.rowcount
 
-    def list_captures(self, session_id=None, limit=50, offset=0):
+    def list_captures(self, session_id=None, limit=50, offset=0, *, recordings_only=False):
         """Return captures newest first, optionally only one session's.
 
         ``limit`` and ``offset`` page through them, like list_shots.
         """
         query = "SELECT * FROM captures"
+        filters = []
         params = []
         if session_id is not None:
-            query += " WHERE session_id = ?"
+            filters.append("session_id = ?")
             params.append(session_id)
+        if recordings_only:
+            filters.append("recording_manifest_path IS NOT NULL")
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
         # created_at can tie within a millisecond; rowid breaks the tie.
         query += " ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?"
         params += [_bounded(limit), max(int(offset), 0)]
         with closing(self._connect()) as conn:
             rows = conn.execute(query, params).fetchall()
             return [_capture_dict(row) for row in rows]
+
+    def unfinished_recordings(self):
+        """Return unfinished bench captures for the recording writer to recover."""
+        placeholders = ", ".join("?" for _ in UNFINISHED_CAPTURE_STATUSES)
+        with closing(self._connect()) as conn:
+            return [_capture_dict(row) for row in conn.execute(
+                f"""SELECT * FROM captures WHERE recording_manifest_path IS NOT NULL
+                       AND status IN ({placeholders})""", UNFINISHED_CAPTURE_STATUSES,
+            )]
 
     # Capture images -----------------------------------------------------------
     # Image paths are stored relative to the folder the database file lives in
@@ -1562,6 +1713,7 @@ class ShotStore:
                    LEFT JOIN shots s ON s.capture_id = c.capture_id
                    WHERE c.images_deleted_at IS NULL
                      AND c.pinned = 0
+                     AND c.recording_manifest_path IS NULL
                      AND (c.image_a_path IS NOT NULL OR c.image_b_path IS NOT NULL)
                    ORDER BY c.created_at DESC, c.rowid DESC"""
             ).fetchall()
@@ -1815,6 +1967,9 @@ def _capture_dict(row):
         "detections": loaded("detections_json"),
         "pinned": bool(row["pinned"]),
         "images_deleted_at": row["images_deleted_at"],
+        "purpose": row["purpose"],  # "shot" or "camera_test"
+        "camera_metadata": loaded("camera_metadata_json"),  # None if not recorded
+        "recording_manifest_path": row["recording_manifest_path"],
     }
 
 

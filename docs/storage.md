@@ -75,6 +75,35 @@ duplicated:
 store.save_shot(speed, angle, capture_id=capture_id, source="live", carry=carry)
 ```
 
+A shot must have the same `source` as its capture, so a live capture can never
+produce a shot labelled `simulation` or the reverse. A shot always joins its
+capture's session.
+
+Processing saved images into a shot uses a claim, then a finalized save:
+
+```python
+existing = store.claim_capture_processing(capture_id, source="simulation",
+                                          processing_version="stereo-vision-v1")
+if existing is None:   # this caller now owns processing; status is "processing"
+    store.save_shot(..., capture_id=capture_id, finalize_capture=True,
+                    detections=evidence, expected_capture=snapshot)
+store.get_capture_shot(capture_id)   # the capture's shot, or None
+```
+
+`claim_capture_processing` returns the existing shot on a repeated request, and
+refuses a busy capture or one whose session has ended. With
+`finalize_capture=True`, the shot is saved and the capture marked `completed`
+in one transaction, and only if the capture's inputs did not change during
+processing.
+
+### Camera tests
+
+A capture's `purpose` is `shot` (the default) or `camera_test`. A camera test
+only proves both cameras took images. It is never measured: `save_shot` and
+`claim_capture_processing` both refuse it, so a camera test with good images and
+no metrics reads as a success, not a failed shot. Check its images with
+`store.image_files(capture_id)`.
+
 Capture states: `preparing`, `armed`, `capturing`, `processing`, `completed`,
 `cancelled`, `timed_out`, `failed`, `interrupted`. The first four are
 unfinished. Keep the Pico's own status inside `pico_report`.
@@ -98,6 +127,55 @@ Fields a capture record may contain (unknown keys are refused):
 | `detections` | Per-frame ball detections, for debugging |
 | `pinned` | `True` to keep the images through cleanup |
 | `images_deleted_at` | Set by cleanup |
+| `purpose` | `shot` (default) or `camera_test` |
+| `camera_metadata` | What each camera reported for this capture; see below |
+| `recording_manifest_path` | Relative path to the bench clip manifest, when this capture records a clip |
+
+`camera_metadata` holds `camera_a` and `camera_b`. Either may be `None` if that
+camera captured nothing. Each camera has these keys, and any key not supplied
+is stored as `null`, meaning unknown, never a guessed value:
+
+| Key | Contents |
+| --- | --- |
+| `model` | e.g. `imx296` |
+| `camera_id` | Picamera2's identity string for the sensor |
+| `connector` | Pi camera port, e.g. `CAM0` |
+| `width`, `height` | Image size actually captured, in pixels |
+| `pixel_format` | e.g. `R8`, `YUV420` |
+| `exposure_us` | Exposure the camera reported using, in microseconds |
+| `analogue_gain` | Gain the camera reported using |
+| `sensor_timestamp_ns` | The camera's own frame timestamp |
+
+Store reported frame metadata and keep requested stream settings in the
+manifest. Bench recordings use the saved PNG's format and identify the physical
+Pi 5 connector from the camera device path when available.
+
+## Camera recordings
+
+The camera bench and Flask use the same database by default. Set `FAIRWAY_DB`
+for both processes, or pass `--database` when starting the bench. The bench
+indexes microphone, vision-triggered, manual, and headless clips. It attaches
+the session that is open when each attempt is created, if one exists.
+
+Every clip has a capture ID and a manifest under
+`<database-directory>/captures/bench/<capture-id>/` by default. SQLite
+stores the path, outcome, Pico report when available, and representative
+Camera A/B metadata. The manifest lists every original PNG with its frame
+metadata and any provisional chip measurements. Free-running clips have
+`timing: null` and remain camera-test records outside shot history. Keep the
+database and its recording folders together when moving them.
+
+| Read endpoint | Returns |
+| --- | --- |
+| `GET /api/recordings` | Recording attempts, newest first. Optional `session_id`, `limit`, and `offset` |
+| `GET /api/recordings/<capture_id>` | Capture record and manifest with a URL for each PNG. The manifest can be `null` while recording or when it is unavailable |
+| `GET /api/recordings/<capture_id>/frames/<filename>` | Original PNG listed in the manifest, or 404 if unavailable |
+
+The two-image cleanup skips whole recordings. After an interrupted write, the
+next bench or an idle Flask startup can index a finished manifest or mark the
+attempt interrupted. Keep one camera bench per database. Flask can read
+recordings while the bench runs. Release the Pico in the bench before using
+the Flask hardware controls.
 
 ## Images
 
@@ -112,7 +190,9 @@ saved but a file is gone), `deleted` (removed by cleanup on purpose) or
 newest 200 captures with an accepted shot and the newest 100 others (rejected,
 failed, timed out). Pinned captures are never touched and do not count toward
 either limit. Records and shots are always kept; only files are removed, and
-`images_deleted_at` is set. It does nothing while a capture is in progress.
+`images_deleted_at` is set. Files are deleted before each record is marked, so
+a deletion that fails is retried on the next run. It does nothing while a
+capture is in progress.
 Pin a capture with `store.update_capture(capture_id, pinned=True)`.
 
 ## Calibrations
@@ -139,19 +219,21 @@ as plain lists; rebuild a `CameraCalibration` with `np.array(...)` on each field
 | Call | Returns | Raises |
 | --- | --- | --- |
 | `start_session()` | session | `SessionStateError` if one is already active |
-| `end_session(session_id=None)` | session | `SessionStateError` if none active or already ended |
+| `end_session(session_id=None)` | session | `SessionStateError` if none active, already ended, or the session still has a capture in progress |
 | `active_session()` | session or `None` | |
 | `get_session(id)` | session | `NotFoundError` |
 | `list_sessions(limit=50, offset=0)` | list of sessions, newest first | |
-| `save_shot(speed_m_s, launch_angle_deg, ..., carry=None, capture_id=None)` | shot with samples | `SessionStateError` if no active session, `ValueError` for bad values, `NotFoundError` for an unknown capture, `ShotExistsError` if the capture already has a shot |
+| `save_shot(speed_m_s, launch_angle_deg, ..., carry=None, capture_id=None, finalize_capture=False)` | shot with samples | `SessionStateError` if no active session or finalizing is not allowed, `ValueError` for bad values, a source mismatch or a camera test, `NotFoundError` for an unknown capture, `ShotExistsError` if the capture already has a shot |
 | `get_shot(id, include_samples=True)` | shot | `NotFoundError` |
 | `latest_shot(session_id=None)` | shot or `None` | |
 | `list_shots(session_id=None, limit=50, offset=0, include_samples=False)` | list of shots, newest first | |
 | `delete_shot(id)` | `None` | `NotFoundError` |
-| `create_capture(record)` | capture | `CaptureExistsError`, `ValueError`, `NotFoundError` for an unknown session or calibration |
+| `create_capture(record)` | capture | `CaptureExistsError`, `ValueError` (including a live capture with a synthetic calibration), `NotFoundError` for an unknown session or calibration, `SessionStateError` for an ended session |
 | `get_capture(capture_id)` | capture | `NotFoundError` |
 | `update_capture(capture_id, **changes)` | capture | `NotFoundError`, `ValueError` |
 | `list_captures(session_id=None, limit=50, offset=0)` | list of captures, newest first | |
+| `get_capture_shot(capture_id)` | shot or `None` | `NotFoundError` |
+| `claim_capture_processing(capture_id, *, source, processing_version)` | `None` if claimed, or the existing shot | `SessionStateError` if busy, not ready, a camera test, a source mismatch or an ended session |
 | `mark_interrupted_captures()` | number marked | |
 | `image_files(capture_id)` | image state and paths | `NotFoundError` |
 | `cleanup_images(keep_accepted=200, keep_other=100)` | `{"deleted": [...], "skipped": None or reason}` | `ValueError` for bad limits |
@@ -202,6 +284,11 @@ saved. Missing values are `null`, matching the draft API. `speed_mph` and
 - One shot per capture. A second save for the same capture raises `ShotExistsError`.
 - Carry is an estimate. It is stored in its own columns, never in measured fields.
 - Commanded timing and measured timing are stored separately.
+- A shot has the same `source` as its capture, and joins its capture's session.
+- Live captures cannot use a synthetic calibration.
+- Camera tests never get a shot and are never processed.
+- A session cannot end while one of its captures is in progress, and captures
+  cannot be created in an ended session.
 
 ## Schema versions
 
@@ -217,6 +304,8 @@ from newer code raises `SchemaVersionError`.
 | 2 | `calibrations` |
 | 3 | `captures` |
 | 4 | `capture_id` and carry columns on `shots` |
+| 5 | `purpose` and `camera_metadata` on `captures` |
+| 6 | Recording manifest paths, including clips previously indexed by the impact-recording branch |
 
 Never edit a migration that has run on a real database. Add a new one to the
 end of `MIGRATIONS` instead.

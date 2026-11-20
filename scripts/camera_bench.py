@@ -4,7 +4,6 @@ import argparse
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
-from datetime import datetime, timezone
 import math
 from pathlib import Path
 import time
@@ -14,7 +13,9 @@ import numpy as np
 
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
 from fairway_fusion.cameras.chip import TeeDeparture, calibrate_plane, measure_chip, recover_short_chip
+from fairway_fusion.cameras.recording_store import RecordingStore, camera_devices
 from fairway_fusion.detection.ball_detector import detect_ball, detect_moving_ball, follow_ball
+from fairway_fusion.storage import ShotStore
 
 
 def read_requests(jobs):
@@ -266,7 +267,8 @@ def main():
     parser.add_argument("--acquire-roi", type=int, nargs=5, action="append",
                         metavar=("CAMERA", "X", "Y", "WIDTH", "HEIGHT"),
                         help="Search this tee area for initial lock, then track outside it")
-    parser.add_argument("--output", type=Path, default=Path("data/recordings/bench"))
+    parser.add_argument("--output", type=Path, help="Clip folder inside the database's directory")
+    parser.add_argument("--database", type=Path, help="SQLite file; defaults to FAIRWAY_DB or the Flask default")
     parser.add_argument("--headless-seconds", type=float,
                         help="Save one timed clip without a preview, then exit (maximum 5 s)")
     parser.add_argument("--pico-port", help="Pico USB serial path, or auto to find one Pico")
@@ -342,14 +344,25 @@ def main():
         from picamera2 import Picamera2
     except ImportError:
         parser.exit(1, "Picamera2 is required on the Pi. See docs/camera_first_demo.md.\n")
+    devices = {}
     if hasattr(Picamera2, "global_camera_info"):
-        available = {info["Num"] for info in Picamera2.global_camera_info()}
+        devices = camera_devices(Picamera2.global_camera_info())
+        available = {int(number) for number in devices}
         missing = set(args.cameras) - available
         if missing:
             parser.exit(1, f"Missing camera indices {sorted(missing)}. "
                         "Run rpicam-hello --list-cameras to check the two sensors.\n")
 
+    store = ShotStore(args.database)
+    recordings = RecordingStore(store)
+    root = store.images_root.resolve()
+    args.output = args.output.resolve() if args.output else root / "captures" / "bench"
+    if not args.output.is_relative_to(root):
+        parser.error("Camera recording output must be inside the database directory.")
+    print(f"SQLite: {store.path}; recordings: {args.output}", flush=True)
+
     settings = dict(size=[640, 480], fps=args.fps, exposure_us=args.exposure_us, gain=args.gain,
+                    camera_numbers=args.cameras, camera_devices=devices, stream_format="YUV420",
                     min_radius=args.min_radius, max_radius=args.max_radius, regions=regions,
                     acquire_min_radius=acquire_radius, acquisition_regions=acquisition_regions)
     headless = args.headless_seconds is not None
@@ -374,6 +387,13 @@ def main():
     eligible_arm_ns = 0
     demo_status = "C: calibrate side view"
     vision = None
+    pending_folder = None
+
+    def abandon_clip(status, error=None):
+        nonlocal pending_folder
+        if pending_folder is not None:
+            recordings.update(pending_folder.name, status=status, error=error)
+            pending_folder = None
 
     def click_tee(event, x, y, *_):
         if event == cv2.EVENT_LBUTTONDOWN and 0 <= x < 640 * len(args.cameras) and 0 <= y < 480:
@@ -403,6 +423,9 @@ def main():
         print("FREE-RUNNING cameras; no Pico control, hardware synchronization, or shot metrics.")
         print("a: software arm | space: save last ~2 s + next 1 s | d: disarm | q: quit")
     with ExitStack() as stack:
+        stack.enter_context(recordings.writer())
+        stack.push(lambda exc_type, error, _: abandon_clip(
+            "interrupted" if exc_type else "cancelled", str(error) if exc_type else None))
         if not headless:
             # Leave CPU for libcamera and the GUI while OpenCV scans a preview.
             cv2.setNumThreads(2)
@@ -433,7 +456,7 @@ def main():
                              for number, (image, metadata) in zip(args.cameras, read_requests(jobs)))
 
             run_locked_bench(args, settings, acquisition_regions, stereo, buffer, read_pair,
-                             select_chip_plane, report_chip)
+                             select_chip_plane, report_chip, recording_store=recordings)
             return
         if not headless:
             stack.callback(cv2.destroyAllWindows)
@@ -443,7 +466,8 @@ def main():
                 print("Click the stationary ball in either view to focus its first-lock search.", flush=True)
         recorder = None
         if args.pico_port:
-            recorder = ImpactRecorder(buffer, args.output, settings, args.pico_port, measure=measure)
+            recorder = ImpactRecorder(buffer, args.output, settings, args.pico_port, measure=measure,
+                                      recording_store=recordings)
             stack.callback(recorder.close)
         # The first camera can deliver a frame while the second starts.
         read_requests([camera.capture_request(wait=False) for camera in cameras])
@@ -462,24 +486,28 @@ def main():
                 ready = True
                 print("READY: both cameras delivered images.")
                 if headless:
+                    pending_folder = recordings.reserve(args.output, status="capturing")
                     trigger_ns = now_ns
                     deadline_ns = now_ns + int(args.headless_seconds * 1e9)
             if deadline_ns is not None and now_ns >= deadline_ns:
-                folder = args.output / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
                 if headless:
                     capture.close()
                 # Both recording modes defer detection to protect capture cadence.
                 print(f"Analyzing {len(buffer.frames)} captured frames.", flush=True)
+                measurement = None
                 if args.vision_trigger:
                     measurement = measure(buffer.frames, trigger_ns)
-                    manifest = buffer.save(folder, trigger_ns=trigger_ns, settings=settings, measurement=measurement)
+                else:
+                    analyze_frames(buffer.frames, regions, args.min_radius, args.max_radius, {},
+                                   acquire_radius=acquire_radius, acquisition_regions=acquisition_regions)
+                folder, pending_folder = pending_folder, None
+                folder, manifest = recordings.save_clip(buffer, folder, trigger_ns=trigger_ns,
+                                                        settings=settings, measurement=measurement)
+                if args.vision_trigger:
                     demo_status = report_chip(folder, manifest)
                     vision = None
                     eligible_arm_ns = time.monotonic_ns() + 1_000_000_000
                 else:
-                    analyze_frames(buffer.frames, regions, args.min_radius, args.max_radius, {},
-                                   acquire_radius=acquire_radius, acquisition_regions=acquisition_regions)
-                    manifest = buffer.save(folder, trigger_ns=trigger_ns, settings=settings)
                     print(f"Saved {len(manifest['frames'])} frames: {folder / 'manifest.json'}")
                 if headless:
                     break
@@ -530,8 +558,10 @@ def main():
                         was_ready = vision.ready
                         event_ns = vision.observe(side.host_ns, balls.get(chip_camera))
                         if vision.ready and not was_ready:
+                            recordings.update(pending_folder.name, status="armed")
                             print("CAMERA ARMED: chip now.", flush=True)
                         if event_ns is not None:
+                            recordings.update(pending_folder.name, status="capturing")
                             trigger_ns = event_ns
                             deadline_ns = now_ns + 1_000_000_000
                             print("Ball departure detected. Saving clip.", flush=True)
@@ -592,6 +622,7 @@ def main():
                         if recorder:
                             recorder.arm()
                         else:
+                            pending_folder = recordings.reserve(args.output, status="preparing")
                             vision = TeeDeparture(corners, width_m, height_m)
                             armed = True
                             print("Leave the ball still until CAMERA ARMED appears.", flush=True)
@@ -603,6 +634,7 @@ def main():
                     if recorder:
                         recorder.cancel()
                     else:
+                        abandon_clip("cancelled")
                         armed, deadline_ns, vision = False, None, None
                         buffer.frames.clear()
                         demo_status = "Place ball and press A to arm" if corners else "C: calibrate side view"
@@ -610,14 +642,17 @@ def main():
                     recorder.test_trigger()
                 continue
             if key == ord("a") and not armed:
+                pending_folder = recordings.reserve(args.output, status="armed")
                 armed = True
                 next_preview_ns = 0
                 print("SOFTWARE ARMED: manual clip saving enabled; Pico is not armed.")
             elif key == ord("d"):
+                abandon_clip("cancelled")
                 armed, deadline_ns = False, None
                 buffer.frames.clear()
                 print("Software disarmed; pending clip cancelled.")
             elif key == 32 and armed and deadline_ns is None:
+                recordings.update(pending_folder.name, status="capturing")
                 trigger_ns = time.monotonic_ns()
                 deadline_ns = trigger_ns + 1_000_000_000
 

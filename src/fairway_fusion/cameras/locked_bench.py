@@ -52,7 +52,8 @@ def _show(frames, regions, images_status, message, scanned_before, *, balls, hin
     cv2.imshow(WINDOW, np.vstack((np.hstack(panels), footer)))
 
 
-def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_plane, report):
+def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_plane, report, *,
+                     recording_store=None):
     """Run after both camera streams are open. Poll USB and CV without blocking acquisition."""
     numbers = tuple(args.cameras)
     dimensions = args.chip_plane_m
@@ -95,7 +96,8 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
         cv2.setMouseCallback(WINDOW, on_click)
         stack.callback(cv2.destroyAllWindows)
         executor = stack.enter_context(ThreadPoolExecutor(max_workers=1))
-        recorder = ImpactRecorder(buffer, args.output, settings, args.pico_port, measure=measure)
+        recorder = ImpactRecorder(buffer, args.output, settings, args.pico_port, measure=measure,
+                                  recording_store=recording_store)
         stack.callback(recorder.close)
         while True:
             try:

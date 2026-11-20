@@ -16,10 +16,12 @@ PICO_ARM_WINDOW_S = 10
 class ImpactRecorder:
     """Keep all serial waits off the camera thread; save one attempt per arm."""
 
-    def __init__(self, buffer, output, settings, port, *, client_factory=PicoClient, measure=None):
+    def __init__(self, buffer, output, settings, port, *, client_factory=PicoClient, measure=None,
+                 recording_store=None):
         self.buffer, self.output, self.settings = buffer, output, settings
         self.port, self.client_factory = port, client_factory
         self.measure = measure
+        self.recording_store = recording_store
         self.state = "READY / DISARMED"
         self.capture_id = None
         self.armed_at_ns = None
@@ -55,7 +57,9 @@ class ImpactRecorder:
             self._details["ball_lock"] = ball_lock
         try:
             self._persist()
-        except OSError:
+            if self.recording_store:
+                self.recording_store.begin(self.capture_id, folder)
+        except Exception:
             self._folder = None
             raise
         self._cancel.clear()
@@ -169,10 +173,14 @@ class ImpactRecorder:
                     self.state = "PICO ARMED"
                     self._details["status"] = "armed"
                     self._persist()
+                    if self.recording_store:
+                        self.recording_store.update(self.capture_id, status="armed")
             elif kind in {"impact", "test_source"}:
                 self._trigger_ns = observed_ns
                 if kind == "test_source":
                     self._details["trigger_source"] = "pico_test_command"
+                if self.recording_store:
+                    self.recording_store.update(self.capture_id, status="capturing")
             elif kind == "terminal":
                 self._details.update(payload)
                 if payload["failure_reason"]:
@@ -185,6 +193,9 @@ class ImpactRecorder:
                 self._deadline = now_ns + (1_000_000_000 if payload["status"] == "completed" else 0)
                 self.state = "RECORDING" if payload["status"] == "completed" else payload["status"].upper()
                 self._persist()
+                if self.recording_store:
+                    self.recording_store.update(self.capture_id, pico_report=payload["pico_report"],
+                                                error=payload["failure_reason"])
         if self._deadline is not None and now_ns >= self._deadline:
             return self._save()
         return None
@@ -199,15 +210,23 @@ class ImpactRecorder:
                 self._details["metrics"] = self._details["measurement"].get("metrics")
             manifest = self.buffer.save(self._folder, trigger_ns=self._trigger_ns,
                                         settings=self.settings, attempt=self._details)
-        except Exception:
+        except Exception as error:
             self.state = "SAVE FAILED"
             # Keep disk evidence for diagnosis; do not retry writes during close.
             self._folder = None
             self._deadline = None
+            if self.recording_store:
+                self.recording_store.write_failed(self.capture_id, error)
             raise
         folder = self._folder
         self._folder = None
         self._deadline = None
+        if self.recording_store:
+            try:
+                self.recording_store.finish(self.capture_id, folder, manifest)
+            except Exception:
+                self.state = "SAVE FAILED"
+                raise
         self.state = "SAVED: " + self._details["status"]
         return folder, manifest
 

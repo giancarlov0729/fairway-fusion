@@ -20,6 +20,8 @@ from fairway_fusion.web.capture_routes import register_capture_routes
 from fairway_fusion.hardware.mock_pico import MockPico
 from fairway_fusion.web.vision_routes import register_vision_routes
 from fairway_fusion.web.vision_media_routes import register_vision_media_routes
+from fairway_fusion.web.recording_routes import register_recording_routes
+from fairway_fusion.cameras.recording_store import RecordingStore
 
 # Create Flask application instance
 def create_app(test_config=None):
@@ -104,7 +106,11 @@ def create_app(test_config=None):
     register_page_routes(app)
     register_pico_routes(app)           # Register USB endpoints using 1 shared Pico client
     store = app.extensions["shot_store"]
-    store.mark_interrupted_captures()
+    store.mark_interrupted_captures(include_recordings=False)
+    if store.unfinished_recordings():
+        # Only recover abandoned bench work when no bench owns this database.
+        with RecordingStore(store).writer(skip_if_busy=True):
+            pass
     app.extensions["capture_service"] = CaptureService(
         app.extensions["pico"], store.captures
     )
@@ -114,6 +120,7 @@ def create_app(test_config=None):
     )
     register_vision_routes(app)
     register_vision_media_routes(app)
+    register_recording_routes(app)
 
     # Return the configured app to Flask or the test runner.
     return app 
