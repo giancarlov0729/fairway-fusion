@@ -123,7 +123,7 @@ class LiveCapture:
                 camera_type = Picamera2
             numbers = (0, 1)
             stereo = StereoZone.load(self.stereo_profile, numbers) if self.stereo_profile else None
-            regions = self.regions or {number: stereo.image_region(number) if stereo else (80, 200, 480, 272)
+            regions = self.regions or {number: stereo.image_region(number) if stereo else (0, 0, 640, 480)
                                        for number in numbers}
             devices = camera_devices(camera_type.global_camera_info()) if hasattr(camera_type, "global_camera_info") else {}
             settings = dict(camera_numbers=list(numbers), camera_devices=devices,

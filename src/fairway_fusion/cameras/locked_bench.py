@@ -12,7 +12,8 @@ from fairway_fusion.cameras.ball_lock import (
     track_locked_flight,
 )
 from fairway_fusion.cameras.chip import (
-    calibrate_plane, measure_ball_scaled_flight, measure_chip, measure_image_motion,
+    calibrate_plane, capture_region, measure_ball_scaled_flight, measure_chip, measure_image_motion,
+    recover_ball_scaled_flight,
 )
 from fairway_fusion.cameras.impact import ImpactRecorder, PICO_ARM_WINDOW_S
 from fairway_fusion.storage import SessionStateError
@@ -125,6 +126,16 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
             result = {"metrics": None, "reason": "The ball moved in the other view. Keep the early flight visible in the calibrated camera and try again."}
         else:
             result = measure_chip(frames, side, event_ns, corners, *dimensions)
+        if corners is None and not result.get("metrics"):
+            for number in dict.fromkeys((side, *numbers)):
+                recovered = recover_ball_scaled_flight(frames, number, event_ns, locked.balls[number])
+                if recovered:
+                    result = recovered
+                    break
+        if result.get("metrics") and result["method"] == "ball_diameter_side_view":
+            camera = result["camera"]
+            source = next(frame for frame in frames if frame.camera == camera)
+            result["capture_region_px"] = capture_region(source.image.shape, locked.balls[camera])
         if not result.get("metrics") and any(track["status"] == "sampling_gap" for track in tracking.values()):
             result["reason"] = ("A camera dropped frames during the ball's departure. "
                                 "Keep the ball in view and try another shot.")
@@ -261,20 +272,22 @@ def run_locked_bench(args, settings, regions, stereo, buffer, read_pair, select_
                         if mode == "WAITING FOR QUIET MICROPHONE":
                             message = "Keep the hitting area quiet while the microphone settles."
 
+            preview_regions = ({f.camera: capture_region(f.image.shape, locked.balls[f.camera])
+                                for f in frames} if locked and corners is None else regions)
             if operator is not None:
                 operator.publish(mode=mode, message=message, calibrated=references is not None,
                                  busy=bool(work or recorder.active), measuring=corners is not None,
                                  capture_id=recorder.capture_id if recorder.active else None,
                                  last_capture=last_capture, stereo=stereo is not None)
                 if now >= next_preview and recorder.state != "RECORDING":
-                    operator.save_preview(preview_image(frames, regions, balls=visible, hints=hints,
+                    operator.save_preview(preview_image(frames, preview_regions, balls=visible, hints=hints,
                                                         show_ball_scale=corners is None))
                     next_preview = now + 500_000_000
                 submitted = operator.take_commands()
             else:
                 if now >= next_preview:
                     verification = "STEREO" if stereo else "2D TEST MODE"
-                    _show(frames, regions, f"{mode}  |  {verification}", message, scanned_before,
+                    _show(frames, preview_regions, f"{mode}  |  {verification}", message, scanned_before,
                           balls=visible, hints=hints)
                     next_preview = now + 33_333_333
                 key = cv2.waitKey(1) & 0xFF

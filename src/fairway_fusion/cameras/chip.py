@@ -363,3 +363,71 @@ def recover_short_chip(frames, event_ns, result, tee_region, max_radius):
         fit.update(tracking="motion_confirmed_short_flight", tee_center_px=tee_center.tolist(),
                    flight_centers_px=[p[3]["center"] for p in points])
     return fit
+
+
+def capture_region(shape, tee):
+    """Bound early flight in either direction using the apparent ball size."""
+    h, w = shape[:2]
+    x, y = tee["center"]
+    r = tee["radius"]
+    left, top = max(0, int(x - 32 * r)), max(0, int(y - 24 * r))
+    right, bottom = min(w, math.ceil(x + 32 * r + 1)), min(h, math.ceil(y + 8 * r + 1))
+    return left, top, right - left, bottom - top
+
+
+def _moving_outlines(previous, image, region, radius):
+    """Rank changed, rim-supported circles in the current image."""
+    x, y, w, h = region
+    zone = image[y:y + h, x:x + w]
+    change = cv2.absdiff(zone, previous[y:y + h, x:x + w])
+    points = []
+    for cx, cy, r in _circles(zone, max(5, int(.73 * radius)), math.ceil(1.33 * radius), threshold=16):
+        p = np.array([cx, cy])
+        if min(cx, cy, w - 1 - cx, h - 1 - cy) < r:
+            continue
+        motion = np.mean(_ring(change, p, r, .65) > 12)
+        edge = np.mean(abs(_ring(zone, p, r, .86) - _ring(zone, p, r, 1.12)) > 12)
+        if motion >= .50 and edge >= .50:
+            points.append((motion * edge, [float(cx + x), float(cy + y)], float(r)))
+    return sorted(points, reverse=True)[:5]
+
+
+def recover_ball_scaled_flight(frames, camera, event_ns, tee=None):
+    """Follow moving outlines from a stationary ball in the buffered side view."""
+    stream = sorted((f for f in frames if f.camera == camera), key=lambda f: f.host_ns)
+    before = [f.image for f in stream if -.35 <= (f.host_ns - event_ns) / 1e9 <= -.10]
+    flight = [f for f in stream if -.09 <= (f.host_ns - event_ns) / 1e9 <= .16]
+    if len(before) < 3 or len(flight) < 4:
+        return None
+    reference = cv2.GaussianBlur(np.median(before, axis=0).astype(np.uint8), (5, 5), 0)
+    images = [cv2.GaussianBlur(f.image, (5, 5), 0) for f in flight]
+    after = np.median(images[-3:], axis=0).astype(np.uint8)
+    tees = [tee] if tee else []
+    if tee is None:
+        for x, y, r in _circles(reference, 10, 40, threshold=16):
+            center = np.array([x, y])
+            rim = _ring(reference, center, r, .86) - _ring(reference, center, r, 1.12)
+            if np.mean(rim > 10) >= .50:
+                tees.append({"center": [float(x), float(y)], "radius": float(r)})
+    estimates = []
+    for origin in tees:
+        center = np.asarray(origin["center"])
+        radius = origin["radius"]
+        departure = _ring(reference, center, radius, .65) - _ring(after, center, radius, .65)
+        if np.mean(abs(departure) > 15) < .65:
+            continue
+        region = capture_region(reference.shape, origin)
+        candidates = [_moving_outlines(previous, image, region, radius)
+                      for previous, image in zip(images, images[1:])]
+        for i, triples in enumerate(zip(candidates, candidates[1:], candidates[2:])):
+            stamps = [f.metadata.get("SensorTimestamp") for f in flight[i + 1:i + 4]]
+            for points in product(*triples):
+                centers = [p[1] for p in points]
+                radii = [p[2] for p in points]
+                result = measure_ball_scaled_flight(camera, dict(flight_sensor_timestamps_ns=stamps,
+                    flight_centers_px=centers, flight_radii_px=radii), origin)
+                if result["metrics"]:
+                    score = sum(p[0] for p in points) / 3 - result["fit_max_error_m"] / BALL_DIAMETER_M
+                    estimates.append((score, {**result, "flight_radii_px": radii,
+                        "tee_center_px": center.tolist(), "capture_region_px": region}))
+    return max(estimates, key=lambda item: item[0])[1] if estimates else None

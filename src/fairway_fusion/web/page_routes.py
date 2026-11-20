@@ -10,15 +10,15 @@ from fairway_fusion.web.capture_sessions import arm_session_capture, end_capture
 from fairway_fusion.web.capture_sessions import require_capture_session
 from fairway_fusion.services.synthetic_capture_service import CaptureAssetError, create_synthetic_capture, load_synthetic_capture
 from fairway_fusion.services.capture_processing_service import CaptureProcessingError, process_saved_capture
-from fairway_fusion.services.recording_review import frame_labels, recording_measurement, review_frames
+from fairway_fusion.services.recording_review import frame_labels, review_measurement, review_frames
 
 
 def recording_review(store, capture, *, browse):
-    _, manifest = read_manifest(store, capture)
+    path, manifest = read_manifest(store, capture)
     review = {"capture": capture, "manifest": manifest, "measurement": {}, "frames": []}
     if manifest is None:
         return review
-    measurement = recording_measurement(manifest)
+    measurement = review_measurement(path, manifest)
     frames = review_frames(manifest, measurement)
     review.update(measurement=measurement, frames=frames, camera_labels=frame_labels(manifest))
     if not browse:

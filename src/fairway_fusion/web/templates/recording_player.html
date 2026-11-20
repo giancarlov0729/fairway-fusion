@@ -1,6 +1,6 @@
 {% if review.manifest and review.frames %}
 <video class="recording-video" controls preload="none" playsinline
-    {% if review.frame %}poster="{{ url_for('get_recording_frame', capture_id=review.capture.capture_id, filename=review.frame.file) }}"{% endif %}
+    {% if review.frame %}poster="{{ url_for('get_recording_detection' if review.frame.used else 'get_recording_frame', capture_id=review.capture.capture_id, filename=review.frame.file) }}"{% endif %}
     aria-label="Slow-motion preview of the saved shot">
   <source src="{{ url_for('get_recording_video', capture_id=review.capture.capture_id) }}" type="video/webm">
   Video playback is unavailable in this browser.

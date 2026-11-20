@@ -323,7 +323,7 @@ def main():
                 stereo = StereoZone.load(args.stereo_profile, tuple(args.cameras))
             for number in args.cameras:
                 if number not in acquisition_regions:
-                    acquisition_regions[number] = stereo.image_region(number) if stereo else (80, 200, 480, 272)
+                    acquisition_regions[number] = stereo.image_region(number) if stereo else (0, 0, 640, 480)
                 if min(acquisition_regions[number][2:]) <= 2 * (acquire_radius or args.min_radius):
                     raise LockError(f"Camera {number} hitting area is too small to contain the ball")
         except LockError as error:

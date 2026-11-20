@@ -20,7 +20,7 @@
   {% if live.preview %}
   <img class="live-preview" src="{{ url_for('live_preview') }}" width="1280" height="480"
        alt="Camera A and Camera B with the hitting areas and the confirmed ball outlined">
-  <p class="muted small">Keep the cameras level and aimed across the ball’s path. The preview marks the ball used to set the scale once it locks.</p>
+  <p class="muted small">Keep the cameras level and aimed across the ball’s path. Once the ball locks, the preview draws the early-flight region and marks the ball used for scale.</p>
   {% endif %}
   {% if live.capture_id %}<p class="muted small capture-id">Capture {{ live.capture_id }}</p>{% endif %}
   <div class="row">

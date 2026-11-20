@@ -1,13 +1,16 @@
 """Review saved frames without changing the capture evidence."""
 
 from bisect import bisect_left
+from functools import lru_cache
+import json
 import math
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 import cv2
 
-from fairway_fusion.cameras.chip import measure_ball_scaled_flight, measure_image_motion
+from fairway_fusion.cameras.bench import Frame
+from fairway_fusion.cameras.chip import measure_ball_scaled_flight, measure_image_motion, recover_ball_scaled_flight
 from fairway_fusion.cameras.recording_store import recording_frame_path
 
 
@@ -115,6 +118,40 @@ def recording_measurement(manifest):
     return measurement
 
 
+@lru_cache(maxsize=32)
+def _recover_saved(path, modified_ns):
+    # Completed recording files are immutable. A replaced manifest invalidates the cache.
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    event = manifest.get("trigger_monotonic_ns")
+    if type(event) is not int:
+        return None
+    for camera in frame_labels(manifest):
+        frames = []
+        for entry in manifest["frames"]:
+            host = entry.get("host_received_monotonic_ns")
+            if entry.get("camera") != camera or type(host) is not int or not -.35 <= (host - event) / 1e9 <= .16:
+                continue
+            source = recording_frame_path(path, entry["file"])
+            image = cv2.imread(str(source), cv2.IMREAD_GRAYSCALE) if source else None
+            if image is not None:
+                frames.append(Frame(camera, host, image, entry.get("metadata") or {}, None))
+        tee = (manifest.get("ball_lock") or {}).get("camera_candidates", {}).get(str(camera))
+        estimate = recover_ball_scaled_flight(frames, camera, event, tee)
+        if estimate:
+            return estimate
+    return None
+
+
+def review_measurement(path, manifest):
+    measurement = recording_measurement(manifest)
+    if (manifest.get("status") == "completed" and manifest.get("trigger_source") == "pico_microphone"
+            and not manifest.get("recording_interrupted") and not measurement.get("metrics")):
+        estimate = _recover_saved(path, path.stat().st_mtime_ns)
+        if estimate:
+            return {**measurement, **estimate, "reason": None}
+    return measurement
+
+
 def review_frames(manifest, measurement=None):
     if measurement is None:
         measurement = recording_measurement(manifest)
@@ -124,11 +161,19 @@ def review_frames(manifest, measurement=None):
     if not metrics:
         for motion in measurement.get("image_motion") or []:
             used.update((motion["camera"], stamp) for stamp in motion["flight_sensor_timestamps_ns"])
+    recovered = dict(zip(measurement.get("flight_sensor_timestamps_ns") or (), zip(
+        measurement.get("flight_centers_px") or (), measurement.get("flight_radii_px") or ())))
     labels = frame_labels(manifest)
     result = []
     for frame in manifest["frames"]:
         point = detection(frame)
         timestamp = (frame.get("metadata") or {}).get("SensorTimestamp")
+        if frame["camera"] == measurement.get("camera"):
+            if timestamp in recovered:
+                center, radius = recovered[timestamp]
+                frame = {**frame, "ball_candidate": {"center": center, "radius": radius}}
+                point = detection(frame)
+            frame = {**frame, "capture_region_px": measurement.get("capture_region_px")}
         result.append({**frame, "label": labels.get(frame.get("camera"), "?"), "time_s": frame_time(frame),
                        "detection": point, "used": point is not None and (frame.get("camera"), timestamp) in used})
     return result
@@ -138,6 +183,9 @@ def annotated_png(path, frame):
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if image is None:
         return None
+    if frame.get("capture_region_px"):
+        x, y, w, h = frame["capture_region_px"]
+        cv2.rectangle(image, (x, y), (x+w-1, y+h-1), (255, 200, 0), 2)
     mark = detection(frame)
     if mark:
         center, radius = mark

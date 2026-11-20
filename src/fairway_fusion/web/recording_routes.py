@@ -7,7 +7,7 @@ import cv2
 from flask import abort, jsonify, request, send_file, url_for
 
 from fairway_fusion.cameras.recording_store import read_manifest, recording_frame_path
-from fairway_fusion.services.recording_review import annotated_png, render_webm
+from fairway_fusion.services.recording_review import annotated_png, render_webm, review_frames, review_measurement
 
 
 def register_recording_routes(app):
@@ -39,15 +39,16 @@ def register_recording_routes(app):
     @app.get("/api/recordings/<capture_id>")
     def get_recording(capture_id):
         row = recording(capture_id)
-        _, manifest = read_manifest(store, row)
+        path, manifest = read_manifest(store, row)
         if manifest is not None:
             for frame in manifest["frames"]:
                 frame["url"] = url_for("get_recording_frame", capture_id=capture_id, filename=frame["file"])
-        return jsonify(capture=row, manifest=manifest)
+        return jsonify(capture=row, manifest=manifest, measurement=review_measurement(path, manifest) if manifest else None)
 
-    def saved_frame(capture_id, filename):
+    def saved_frame(capture_id, filename, *, annotated=False):
         path, manifest = read_manifest(store, recording(capture_id))
-        frame = next((frame for frame in manifest["frames"] if frame["file"] == filename), None) if manifest else None
+        frames = review_frames(manifest, review_measurement(path, manifest)) if annotated and manifest else (manifest or {}).get("frames", [])
+        frame = next((frame for frame in frames if frame["file"] == filename), None) if manifest else None
         if frame is None:
             abort(404, description="Recording frame is unavailable.")
         frame_path = recording_frame_path(path, filename)
@@ -65,7 +66,7 @@ def register_recording_routes(app):
 
     @app.get("/api/recordings/<capture_id>/frames/<filename>/detection")
     def get_recording_detection(capture_id, filename):
-        path, frame = saved_frame(capture_id, filename)
+        path, frame = saved_frame(capture_id, filename, annotated=True)
         data = annotated_png(path, frame)
         if data is None:
             abort(404, description="Recording frame could not be decoded.")

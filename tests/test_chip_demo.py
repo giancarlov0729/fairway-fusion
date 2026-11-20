@@ -11,7 +11,7 @@ import pytest
 from fairway_fusion.cameras.bench import Frame, FrameBuffer
 from fairway_fusion.cameras.chip import (
     TeeDeparture, calibrate_plane, measure_ball_scaled_flight, measure_chip, measure_image_motion,
-    recover_short_chip,
+    recover_ball_scaled_flight, recover_short_chip,
 )
 from fairway_fusion.cameras.impact import ImpactRecorder
 from fairway_fusion.hardware.pico_client import PicoRejected
@@ -253,3 +253,26 @@ def test_short_flight_recovery_uses_motion_instead_of_stale_tee_lock(airborne_fr
         assert "reason" not in result
         assert result["metrics"]["speed_m_s"] == pytest.approx(4.67, abs=.25)
         assert result["flight_centers_px"][-1] == pytest.approx((190, 104), abs=3)
+
+@pytest.mark.parametrize("moving", [True, False])
+def test_automatic_region_and_motion_from_pixels(moving):
+    event = 2_000_000_000
+    frames = []
+    for index in range(-18, 10):
+        image = np.full((240, 320), 40, dtype=np.uint8)
+        step = min(max(index, 0), 6) if moving else 0
+        center = (244 - 25 * step, 140 - 10 * step)
+        cv2.circle(image, center, 13, 210, -1, cv2.LINE_AA)
+        cv2.circle(image, (76, 92), 16, 190, -1, cv2.LINE_AA)
+        frame = Frame(0, event + index * 17_000_000, image,
+                      {"SensorTimestamp": event + index * 20_000_000}, None)
+        frames.append(frame)
+    estimate = recover_ball_scaled_flight(frames, 0, event)
+    if moving:
+        assert estimate["metrics"]["speed_m_s"] == pytest.approx(2.21, rel=.10)
+        assert estimate["metrics"]["launch_angle_deg"] == pytest.approx(21.8, abs=2)
+        x, y, width, height = estimate["capture_region_px"]
+        assert all(x <= cx < x + width and y <= cy < y + height
+                   for cx, cy in estimate["flight_centers_px"])
+    else:
+        assert estimate is None
