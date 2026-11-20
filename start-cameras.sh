@@ -8,7 +8,11 @@ if [ ! -x "$bench_python" ]; then
     exit 1
 fi
 
-if [ "${1:-}" = "--chip-demo" ]; then
+if [ "${1:-}" = "--locked-demo" ]; then
+    shift
+    set -- --ball-lock --pico-port auto --fps 60 --exposure-us 1000 --gain 8 \
+        --min-radius 6 --max-radius 56 --acquire-min-radius 18 "$@"
+elif [ "${1:-}" = "--chip-demo" ]; then
     shift
     use_pico=true
     for arg do

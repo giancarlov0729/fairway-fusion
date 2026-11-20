@@ -63,12 +63,14 @@ def test_chip_results_from_frames_use_sensor_time_and_require_microphone(tmp_pat
     monkeypatch.setattr(time, "monotonic_ns", lambda: event_ns)
     recorder = ImpactRecorder(buffer, tmp_path, {}, "fake", measure=measure,
                               client_factory=lambda port: Pico())
-    assert recorder.arm()
+    arm_evidence = {"verification": "two_view_appearance", "position_m": None}
+    assert recorder.arm(ball_lock=arm_evidence)
     timeout = time.monotonic() + 2
     while recorder.state != "PICO ARMED" and time.monotonic() < timeout:
         recorder.tick()
         time.sleep(.01)
     assert recorder.state == "PICO ARMED"
+    assert recorder.armed_at_ns == event_ns
     assert arm_requests == [recorder.capture_id] * 3
     if event_source == "pico_microphone":
         impact.set()
@@ -80,6 +82,7 @@ def test_chip_results_from_frames_use_sensor_time_and_require_microphone(tmp_pat
     _, manifest = recorder.tick(event_ns + 1_000_000_000)
     assert manifest["trigger_source"] == event_source
     assert manifest["pico_report"]["capture_id"] == manifest["capture_id"]
+    assert manifest["ball_lock"] == arm_evidence
     if event_source == "pico_test_command":
         assert manifest["metrics"] is None
         assert "measurement" not in manifest
@@ -87,6 +90,7 @@ def test_chip_results_from_frames_use_sensor_time_and_require_microphone(tmp_pat
         assert manifest["measurement"]["status"] == "estimated"
         assert manifest["metrics"]["speed_m_s"] == pytest.approx(2.236, abs=.09)
         assert manifest["metrics"]["launch_angle_deg"] == pytest.approx(26.565, abs=2)
+        assert len(manifest["measurement"]["flight_centers_px"]) == manifest["measurement"]["sample_count"]
         assert "launch_direction_deg" not in manifest["metrics"]
         stationary = deque(frame for frame in buffer.frames if frame.host_ns < event_ns - 70_000_000)
         assert measure_chip(stationary, 0, event_ns, corners, .60, .30)["metrics"] is None

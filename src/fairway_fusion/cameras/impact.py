@@ -10,6 +10,7 @@ from fairway_fusion.hardware.pico_client import PicoClient, PicoRejected
 
 
 GATE_SETTLE_TIMEOUT_S = 3.0
+PICO_ARM_WINDOW_S = 10
 
 
 class ImpactRecorder:
@@ -21,6 +22,7 @@ class ImpactRecorder:
         self.measure = measure
         self.state = "READY / DISARMED"
         self.capture_id = None
+        self.armed_at_ns = None
         self._thread = None
         self._events = Queue()
         self._cancel, self._test = Event(), Event()
@@ -39,19 +41,27 @@ class ImpactRecorder:
         temporary.write_text(json.dumps(self._details, indent=2), encoding="utf-8")
         temporary.replace(path)
 
-    def arm(self):
+    def arm(self, *, ball_lock=None):
         if self.active:
             return False
         self.capture_id = uuid4().hex
-        self._folder = self.output / self.capture_id
-        self._folder.mkdir(parents=True, exist_ok=False)
+        folder = self.output / self.capture_id
+        folder.mkdir(parents=True, exist_ok=False)
+        self._folder = folder
         self._details = {"capture_id": self.capture_id, "status": "arming",
                          "trigger_source": "pico_microphone", "pico_report": None,
                          "timing_verified": False, "synchronized": False}
-        self._persist()
+        if ball_lock is not None:
+            self._details["ball_lock"] = ball_lock
+        try:
+            self._persist()
+        except OSError:
+            self._folder = None
+            raise
         self._cancel.clear()
         self._test.clear()
         self._trigger_ns = None
+        self.armed_at_ns = None
         self.state = "ARMING"
         self._thread = Thread(target=self._worker, args=(self.capture_id,), daemon=False)
         self._thread.start()
@@ -155,6 +165,7 @@ class ImpactRecorder:
                     self.state = "WAITING FOR QUIET MICROPHONE"
             elif kind == "armed":
                 if not self._cancel.is_set():
+                    self.armed_at_ns = observed_ns
                     self.state = "PICO ARMED"
                     self._details["status"] = "armed"
                     self._persist()
@@ -171,9 +182,9 @@ class ImpactRecorder:
                 self._details["timestamp_note"] = (
                     "Host receipt of Pico report/command; not the physical impact time. "
                     "Pico boot microseconds and camera SensorTimestamp are separate clock domains.")
-                self._persist()
                 self._deadline = now_ns + (1_000_000_000 if payload["status"] == "completed" else 0)
                 self.state = "RECORDING" if payload["status"] == "completed" else payload["status"].upper()
+                self._persist()
         if self._deadline is not None and now_ns >= self._deadline:
             return self._save()
         return None

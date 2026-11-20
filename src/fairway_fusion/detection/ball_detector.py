@@ -150,6 +150,19 @@ def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=Non
         moving = _moving_ball(blurred, brighter, min_radius, max_radius)
         if moving is not None:
             return moving
+    candidates = _circle_candidates(gray, blurred, min_radius, max_radius, prior,
+                                    prefer_roundness, brighter)
+    return candidates[0] if candidates else None
+
+
+def detect_ball_candidates(frame, min_radius, max_radius, *, prefer_roundness=True):
+    """Return distinct, shape-checked candidates without making a lock decision."""
+    gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    return _circle_candidates(gray, blurred, min_radius, max_radius, None, prefer_roundness, None)
+
+
+def _circle_candidates(gray, blurred, min_radius, max_radius, prior, prefer_roundness, brighter):
     candidates = [prior] if prior is not None else []
     _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -172,7 +185,7 @@ def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=Non
         if circles is not None:
             candidates.extend(circles[0])
     if not candidates:
-        return None
+        return []
 
     centers = np.asarray(candidates, dtype=np.float32)
     x, y, radius = centers.T
@@ -182,7 +195,7 @@ def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=Non
                  & (y - radius >= 0) & (y + radius < height))
     x, y, radius = centers[in_bounds].T
     if not radius.size:
-        return None
+        return []
 
     def ring(scale, image=blurred):
         distance = radius[:, np.newaxis] * scale
@@ -236,16 +249,21 @@ def detect_ball(frame, min_radius=5, max_radius=200, *, previous=None, prior=Non
     else:
         score = (support + 0.25 * sharpness + 0.25 * fill) * radius**0.20
     if not valid.any():
-        return None
+        return []
     if brighter is not None:
         changed = np.mean(ring(0.82, brighter) >= 15, axis=1)
         score *= 1 + changed
-    index = np.argmax(np.where(valid, score, -np.inf))
-    return {
-        "center": (int(round(x[index])), int(round(y[index]))),
-        "radius": int(round(radius[index])),
-        "circularity": float(support[index]),
-    }
+    distinct = []
+    indices = np.flatnonzero(valid)
+    for index in indices[np.argsort(-score[indices], kind="stable")]:
+        center = (int(round(x[index])), int(round(y[index])))
+        r = int(round(radius[index]))
+        # Contours and both Hough passes often describe the same rim.
+        if any(np.hypot(center[0] - ball["center"][0], center[1] - ball["center"][1])
+               <= 0.55 * min(r, ball["radius"]) for ball in distinct):
+            continue
+        distinct.append({"center": center, "radius": r, "circularity": float(support[index])})
+    return distinct
 
 
 def detect_ball_centers(image, *, threshold=100, min_radius=5, max_radius=200):

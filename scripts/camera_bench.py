@@ -270,6 +270,10 @@ def main():
     parser.add_argument("--headless-seconds", type=float,
                         help="Save one timed clip without a preview, then exit (maximum 5 s)")
     parser.add_argument("--pico-port", help="Pico USB serial path, or auto to find one Pico")
+    parser.add_argument("--ball-lock", action="store_true", help="Require ball validation before microphone arming")
+    parser.add_argument("--stereo-profile", type=Path, help="Real 640x480 stereo calibration and hitting volume JSON")
+    parser.add_argument("--allow-unverified-lock", action="store_true",
+                        help="Bench only: allow two-view appearance checks without a stereo profile")
     parser.add_argument("--vision-trigger", action="store_true", help="Trigger on a rising ball leaving the tee")
     parser.add_argument("--outputs-disconnected", action="store_true",
                         help="Confirm GP2/GP3/GP4 are disconnected from cameras and lighting")
@@ -292,6 +296,12 @@ def main():
     chip_mode = bool(args.pico_port or args.vision_trigger)
     if args.vision_trigger and (args.pico_port or args.headless_seconds is not None):
         parser.error("Vision trigger requires a desktop preview and uses no Pico port")
+    if args.ball_lock and not args.pico_port:
+        parser.error("Ball-lock mode requires a Pico microphone connection via --pico-port")
+    if not args.ball_lock and (args.stereo_profile or args.allow_unverified_lock):
+        parser.error("Stereo and unverified-lock options apply only to --ball-lock")
+    if args.ball_lock and not (args.stereo_profile or args.allow_unverified_lock):
+        parser.error("Ball-lock mode requires --stereo-profile, or --allow-unverified-lock for bench testing")
     if chip_mode and (chip_camera not in args.cameras or not all(math.isfinite(m) and m > 0 for m in (width_m, height_m))):
         parser.error("Select a connected chip camera and positive calibration dimensions")
     if args.pico_port:
@@ -313,6 +323,21 @@ def main():
     acquire_radius = args.acquire_min_radius
     if acquire_radius is None and acquisition_regions:
         acquire_radius = args.min_radius
+    stereo = None
+    if args.ball_lock:
+        from fairway_fusion.cameras.ball_lock import LockError, StereoZone
+        from fairway_fusion.cameras.locked_bench import run_locked_bench
+
+        try:
+            if args.stereo_profile:
+                stereo = StereoZone.load(args.stereo_profile, tuple(args.cameras))
+            for number in args.cameras:
+                if number not in acquisition_regions:
+                    acquisition_regions[number] = stereo.image_region(number) if stereo else (80, 200, 480, 272)
+                if min(acquisition_regions[number][2:]) <= 2 * (acquire_radius or args.min_radius):
+                    raise LockError(f"Camera {number} hitting area is too small to contain the ball")
+        except LockError as error:
+            parser.error(str(error))
     try:
         from picamera2 import Picamera2
     except ImportError:
@@ -368,7 +393,9 @@ def main():
         result = measure_chip(samples, chip_camera, event_ns, corners, width_m, height_m)
         return recover_short_chip(samples, event_ns, result, acquisition_regions.get(chip_camera), args.max_radius)
 
-    if args.vision_trigger:
+    if args.ball_lock:
+        print("BALL LOCK | Calibrated scans the empty hitting area | Arm verifies both views")
+    elif args.vision_trigger:
         print("CHIP DEMO | C calibrate | A arm camera trigger | D cancel | Q quit", flush=True)
     elif args.pico_port:
         print("CHIP DEMO | C calibrate | A arm microphone | T test trigger | D cancel | Q quit", flush=True)
@@ -379,6 +406,7 @@ def main():
         if not headless:
             # Leave CPU for libcamera and the GUI while OpenCV scans a preview.
             cv2.setNumThreads(2)
+        if not headless and not args.ball_lock:
             preview_worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
             tracking_worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
         cameras = []
@@ -398,6 +426,15 @@ def main():
         for camera in cameras:
             camera.start()
             capture.callback(camera.stop)
+        if args.ball_lock:
+            def read_pair():
+                jobs = [camera.capture_request(wait=False) for camera in cameras]
+                return tuple(Frame(number, time.monotonic_ns(), image, metadata, None)
+                             for number, (image, metadata) in zip(args.cameras, read_requests(jobs)))
+
+            run_locked_bench(args, settings, acquisition_regions, stereo, buffer, read_pair,
+                             select_chip_plane, report_chip)
+            return
         if not headless:
             stack.callback(cv2.destroyAllWindows)
             if acquire_radius is not None:

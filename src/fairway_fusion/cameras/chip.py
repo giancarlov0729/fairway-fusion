@@ -93,6 +93,7 @@ def measure_chip(frames, camera, event_ns, corners, width_m, height_m):
                   corners_px=corners, width_m=width_m, height_m=height_m,
                   status="rejected", metrics=None)
     samples = []
+    centers_by_sensor_time = {}
     for frame in frames:
         if frame.camera != camera or frame.ball is None:
             continue
@@ -103,6 +104,7 @@ def measure_chip(frames, camera, event_ns, corners, width_m, height_m):
                 or cv2.pointPolygonTest(contour, pixel, False) < 0):
             continue
         position = cv2.perspectiveTransform(np.array([[pixel]]), transform)[0, 0]
+        centers_by_sensor_time[t] = list(frame.ball["center"])
         samples.append((t, elapsed, position, frame.ball["radius"]))
 
     baseline = [position for _, elapsed, position, _ in samples if -.8 <= elapsed <= -.22]
@@ -133,7 +135,9 @@ def measure_chip(frames, camera, event_ns, corners, width_m, height_m):
 
     if len(flight) < 3 or flight[-1][0] - flight[0][0] < 25_000_000:
         return {**result, "reason": "Need three rising ball detections inside the calibration area"}
-    return _fit_flight(flight, result)
+    return _fit_flight(flight, {**result,
+                                "flight_sensor_timestamps_ns": [point[0] for point in flight],
+                                "flight_centers_px": [centers_by_sensor_time[point[0]] for point in flight]})
 
 
 def _fit_flight(flight, result):

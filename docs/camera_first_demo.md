@@ -219,6 +219,90 @@ a tee location if the live tracker loses the ball. The demo estimates speed and
 elevation only. Full 3D launch, spin, and carry require additional calibration and
 timing validation.
 
+## Ball-verified microphone demo
+
+Use the same camera and Pico setup, with GP2, GP3 and GP4 disconnected from the
+camera and lighting interfaces. For an indoor test before stereo calibration:
+
+```bash
+sh start-cameras.sh --locked-demo --outputs-disconnected --allow-unverified-lock
+```
+
+The preview labels this **2D TEST MODE**. Arm requires one matching-in-time,
+stable, ball-sized foreground candidate in each camera. This mode cannot prove
+that the candidates are at the same physical position. Place the unit at the
+marked position and aim it so the ball will be inside both preview boxes. Use
+`--acquire-roi CAMERA X Y WIDTH HEIGHT` to set each box at the test station if
+the default boxes do not fit. Calibrated-profile mode can project these boxes
+automatically. Tune `--acquire-min-radius` and `--max-radius` to the apparent
+ball size in pixels at the marked spot. Use a different size range for a
+different practice ball or working distance.
+
+For the same 640×480 framing as the November lab recordings, use these tighter
+boxes as a starting point. In those recordings the resting ball had a radius of
+about 20–24 pixels, within the launcher defaults. If the mounts or hitting spot
+move, check that the whole ball and its rim fit inside both boxes.
+
+```bash
+sh start-cameras.sh --locked-demo --outputs-disconnected --allow-unverified-lock \
+  --acquire-roi 0 92 238 146 116 --acquire-roi 1 153 225 143 120
+```
+
+Mark the ball position on the mat. Frame it with room above and downrange in
+both views. Keep the ball's outline clear of the mat lip and shoes where
+possible. The boxes limit the stationary search. The flight tracker can follow
+the ball outside them.
+
+1. Clear the hitting area. Click **Calibrated** (or press **E**) to sample a short
+   empty-mat reference in both views. Keep the unit still. If the scan rejects
+   motion, flicker, clipping, or stalled frames, fix the displayed cause and
+   click **Recalibrate**. Rescan whenever the unit is moved or the light changes
+   substantially. References are kept for the running session.
+2. When setup shows **Ready**, place one ball in the marked area. Both a mat
+   ball and a teed ball are supported within the configured location and height
+   range. Press **Arm** or **A**. The bench requires one consistent candidate
+   in both cameras in at least four of five samples before it sends ARM to the
+   Pico. If a circle fit drops out, the bench can recheck the same location
+   after two fits agree. Ambiguous candidates block arming. If it rejects the candidate,
+   fix the displayed cause and press Arm again; the current reference is reused
+   unless you rescan.
+3. Wait for **Arm successful**. The 10-second countdown starts when the Pico
+   acknowledges arming. **D** cancels, **T** tests the recorder through the Pico,
+   and **Q** exits. The lock stays anchored to the original ball, and a brief
+   occlusion can clear without a new lock. Persistent loss before capture
+   requests a disarm and re-arm. After a microphone event, the saved frames are
+   tracked from the verified starting ball in both views. The manifest contains
+   the arm evidence and the observations used for measurement.
+4. For debugging, click the ball center in either view to narrow that camera's
+   candidate search. **R** clears the hints. The click cannot bypass any other
+   arm check. **C** sets the optional side-plane geometry for the existing 2D
+   angle and speed estimate. The empty scan and recording work without **C**.
+
+For physical position verification, run:
+
+```bash
+sh start-cameras.sh --locked-demo --outputs-disconnected --stereo-profile path/to/real-stereo.json
+```
+
+The JSON profile contains `cameras`, with a key for each camera index (`"0"`,
+`"1"` by default). Each entry has `K`, `distortion`, `R`, `t`, and `image_size`
+(`[640, 480]`). `R` and `t` map world coordinates in meters to camera coordinates.
+`center_min_m` and `center_max_m` are three-element bounds on the ball center
+in that same frame, including the permitted mat and tee heights. Optional
+`ball_diameter_m` defaults to `0.04267`. Use measured calibration from the mounted
+rig, with the cameras in the same positions, focus, order, and capture mode.
+Stereo verification applies to the stationary ball; the cameras still capture
+free-running footage, and the optional chip estimate is still single-view.
+
+Lab check: leave a static distractor in a box, scan the empty mat, and verify Arm
+fails. Add one ball, verify it arms, and remove it without tapping the mic to
+verify lock loss. Repeat with balls on the mat and on a tee and ordinary movement
+behind the ball. Confirm a quiet-room chip and inspect the manifest. Ball tracking
+can only report observations while the ball is visible and captured clearly.
+Full-swing coverage and measurement accuracy require physical validation.
+
+The older `--chip-demo` launcher remains available for the fallback demo.
+
 ## Separate Pico arming proof with no IR board
 
 Use the existing **Pico 2 W / RP2350** C firmware, not the older branch's RP2040
