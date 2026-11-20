@@ -1,5 +1,6 @@
 import concurrent.futures
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
@@ -62,6 +63,21 @@ def test_static_distractor_cannot_arm_and_one_view_is_insufficient(references):
         confirm(sequence((TEE[0], None)), references)
     with pytest.raises(LockError, match="lighting changed"):
         confirm(sequence(TEE, backdrop=112), references)
+
+
+def test_stationary_ball_in_lab_camera_frames():
+    # Two views, an empty reference followed by five independent live previews.
+    image = cv2.imread(str(Path(__file__).parent / "fixtures/stationary_ball_on_mat.png"), 0)
+    samples = [tuple(Frame(cam, t, crop, {"SensorTimestamp": t}, None)
+                     for cam, crop in enumerate(np.hsplit(row, 2)))
+               for t, row in enumerate(np.vsplit(image, 6))]
+    regions = dict.fromkeys(CAMERAS, (0, 0, 64, 64))
+    refs = {frame.camera: frame.image for frame in samples[0]}
+    lock = confirm_ball(samples[1:], CAMERAS, regions, refs, 10, 56, {})
+    for camera in CAMERAS:
+        assert lock.balls[camera]["center"] == pytest.approx((32, 32), abs=4)
+        assert all(lock.present(pair[camera]) for pair in samples[1:])
+        assert not lock.present(samples[0][camera])
 
 
 def test_shaded_ball_can_darken_the_empty_floor():

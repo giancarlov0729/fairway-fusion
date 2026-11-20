@@ -124,7 +124,7 @@ def _stationary_match(zone, delta, texture, ball, hint):
     # Require a changed interior and a mostly brighter, visible rim.
     visible_rim = np.abs(rim) >= 12
     covered_sectors = sum(sector.mean() >= .33 for sector in np.roll(visible_rim, 3).reshape(8, 6))
-    return (np.mean(np.abs(change) >= 15) >= .65
+    return (np.mean(np.abs(change) >= 15) >= .52
             and visible_rim.mean() >= .65 and np.mean(rim >= 10) >= .50
             and covered_sectors >= 7 and smooth_core >= .80)
 
@@ -135,16 +135,53 @@ def _same_ball(first, second):
             and abs(radius - second["radius"]) <= max(3, .20 * radius))
 
 
+def _changed_ball_outlines(zone, delta, min_radius, max_radius):
+    """Fit the newly occupied patch even when the ball blends into the floor."""
+    mask = (np.abs(cv2.GaussianBlur(delta, (5, 5), 0)) >= 12).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        (cx, cy), radius = cv2.minEnclosingCircle(contour)
+        if not min_radius <= radius <= 1.25 * max_radius or cv2.contourArea(contour) < .48 * math.pi * radius**2:
+            continue
+        # A cast shadow can extend the changed patch a few pixels below the
+        # actual rim. Rank nearby outlines by contrast along the image edge.
+        best = None
+        for dx in (-2, 0, 2):
+            for dy in (-4, -2, 0, 2):
+                center = (round(cx) + dx, round(cy) + dy)
+                for r in range(max(min_radius, round(.77 * radius)), min(max_radius, round(radius)) + 1):
+                    if min(center[0], center[1], zone.shape[1]-1-center[0], zone.shape[0]-1-center[1]) < r:
+                        continue
+                    rim = _rim_contrast(zone, center, r)
+                    score = np.mean(np.clip(np.abs(rim), 0, 45)) + .3 * np.mean(np.clip(rim, 0, 45))
+                    score -= .15 * (abs(dx) + abs(dy) + abs(r - radius))
+                    if best is None or score > best[0]:
+                        best = score, {"center": center, "radius": r, "circularity": float(np.mean(rim >= 10))}
+        if best:
+            yield best[1]
+
+
 def _stationary_observations(frames, empty, box, min_radius, max_radius, hint, label):
     x, y, _, _ = box
     local_hint = None if hint is None else (hint[0] - x, hint[1] - y)
     patches = [_foreground(frame.image, empty, box, label) for frame in frames]
     textures = [cv2.absdiff(zone, cv2.GaussianBlur(zone, (7, 7), 0)) for zone, _ in patches]
-    observations = [
-        [ball for ball in detect_ball_candidates(zone, min_radius, max_radius, prefer_roundness=False)
-         if _stationary_match(zone, delta, texture, ball, local_hint)]
-        for (zone, delta), texture in zip(patches, textures)
-    ]
+    median = np.median([zone for zone, _ in patches], axis=0).astype(np.uint8)
+    baseline_delta = median.astype(np.int16) - empty
+    fixed = list(_changed_ball_outlines(median, baseline_delta, min_radius, max_radius))
+    for ball in detect_ball_candidates(median, min_radius, max_radius, prefer_roundness=False):
+        if not any(_same_ball(seed, ball) for seed in fixed):
+            fixed.append(ball)
+    observations = []
+    for (zone, delta), texture in zip(patches, textures):
+        balls = [seed for seed in fixed if _stationary_match(zone, delta, texture, seed, local_hint)]
+        if not balls:
+            # A moving or intermittently obscured ball needs an independent fit.
+            balls = [ball for ball in detect_ball_candidates(zone, min_radius, max_radius, prefer_roundness=False)
+                     if _stationary_match(zone, delta, texture, ball, local_hint)]
+        observations.append(balls)
     seeds = [balls[0] for balls in observations if len(balls) == 1]
     if len(seeds) >= 2 and all(_same_ball(seeds[0], ball) for ball in seeds[1:]):
         # A club or a shoe can interrupt a clean circle fit. Check the same
